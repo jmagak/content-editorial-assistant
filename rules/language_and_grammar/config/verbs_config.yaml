@@ -1,0 +1,1019 @@
+# Verbs Configuration
+# Manages thresholds, weights, patterns, and lists for verbs rule
+# Used by VerbsRule for detecting passive voice, tense issues, and verb-related problems
+
+# Evidence thresholds
+evidence_thresholds:
+  passive_voice_min: 0.1
+  future_tense_min: 0.1
+  past_tense_min: 0.1
+  noun_verb_min: 0.1
+  agreement_min: 0.5
+  future_high: 0.9
+  future_medium: 0.7
+  future_low: 0.5
+  past_high: 0.9
+  past_medium: 0.7
+  past_low: 0.5
+  agreement_high: 0.8
+
+# Future tense constructions
+future_tense_constructions:
+  inappropriate_in_instructions:
+    - 'will click'
+    - 'will select'
+    - 'will enter'
+    - 'will type'
+    - 'will configure'
+    - 'will install'
+    - 'will setup'
+    - 'will run'
+    - 'will execute'
+    - 'will perform'
+  
+  better_as_present:
+    - 'will display'
+    - 'will show'
+    - 'will provide'
+    - 'will contain'
+    - 'will include'
+    - 'will support'
+    - 'will enable'
+    - 'will allow'
+    - 'will require'
+  
+  context_dependent:
+    - 'will be'
+    - 'will have'
+    - 'will become'
+    - 'will remain'
+    - 'will continue'
+
+# Base evidence scores for future tense
+future_base_evidence:
+  inappropriate: 0.8
+  better_present: 0.6
+  context_dependent: 0.4
+  default: 0.5
+
+# Past tense verbs
+past_tense_verbs:
+  inappropriate_in_current_docs:
+    - 'clicked'
+    - 'selected'
+    - 'entered'
+    - 'typed'
+    - 'configured'
+    - 'installed'
+    - 'ran'
+    - 'executed'
+    - 'performed'
+    - 'created'
+    - 'deleted'
+    - 'modified'
+  
+  better_as_present:
+    - 'displayed'
+    - 'showed'
+    - 'provided'
+    - 'contained'
+    - 'included'
+    - 'supported'
+    - 'enabled'
+    - 'allowed'
+    - 'required'
+    - 'returned'
+  
+  temporal_acceptable:
+    - 'was'
+    - 'were'
+    - 'had'
+    - 'became'
+    - 'remained'
+    - 'continued'
+    - 'appeared'
+    - 'seemed'
+    - 'occurred'
+    - 'happened'
+
+# Base evidence scores for past tense
+past_base_evidence:
+  inappropriate: 0.7
+  better_present: 0.5
+  temporal_acceptable: 0.3
+  default: 0.45
+
+# Linguistic clues - Future tense
+future_linguistic_weights:
+  question_reduction: 0.3
+  conditional_reduction: 0.2
+  scheduled_reduction: 0.15
+  will_be_able_reduction: 0.2
+  modal_combo_reduction: 0.1
+  instruction_boost: 0.2
+  negative_reduction: 0.1
+  entity_org_reduction: 0.1
+  entity_person_reduction: 0.05
+  entity_temporal_reduction: 0.15
+  action_verb_boost: 0.15
+  state_verb_reduction: 0.1
+  early_position_boost: 0.1
+
+# Linguistic clues - Past tense
+past_linguistic_weights:
+  strong_temporal_reduction: 0.4
+  weak_temporal_reduction: 0.2
+  legitimate_temporal_reduction: 0.3
+  issue_indicator_reduction: 0.25
+  negative_past_reduction: 0.2
+  subordinate_clause_reduction: 0.15
+  conditional_reduction: 0.1
+  quote_reduction: 0.15
+  entity_org_reduction: 0.08
+  entity_person_reduction: 0.1
+  entity_temporal_reduction: 0.2
+  entity_cardinal_version_reduction: 0.12
+  comparison_reduction: 0.1
+
+# Structural clues - Future tense
+future_structural_weights:
+  code_block_reduction: 0.8
+  inline_code_reduction: 0.6
+  h1_reduction: 0.2
+  h2_reduction: 0.1
+  h3_plus_reduction: 0.05
+  list_boost: 0.1
+  nested_list_boost: 0.05
+  table_boost: 0.05
+  note_tip_reduction: 0.1
+  warning_reduction: 0.15
+  important_reduction: 0.05
+  quote_reduction: 0.2
+  example_reduction: 0.1
+
+# Structural clues - Past tense
+past_structural_weights:
+  prerequisites_reduction: 0.4
+  code_block_reduction: 0.6
+  inline_code_reduction: 0.4
+  h1_boost: 0.1
+  h2_boost: 0.05
+  h3_plus_boost: 0.02
+  list_boost: 0.1
+  nested_list_boost: 0.05
+  table_boost: 0.05
+  note_tip_reduction: 0.05
+  warning_reduction: 0.1
+  important_boost: 0.02
+  quote_reduction: 0.3
+  example_reduction: 0.2
+  changelog_reduction: 0.4
+
+# Semantic clues - Future tense
+future_semantic_weights:
+  procedural_boost: 0.25
+  api_boost: 0.2
+  technical_boost: 0.15
+  tutorial_boost: 0.2
+  legal_boost: 0.1
+  academic_boost: 0.05
+  marketing_reduction: 0.1
+  narrative_reduction: 0.15
+  software_domain_boost: 0.1
+  user_docs_boost: 0.15
+  training_boost: 0.1
+  legal_domain_boost: 0.05
+  planning_domain_reduction: 0.2
+  beginner_audience_boost: 0.1
+  professional_boost: 0.05
+  technical_audience_boost: 0.08
+  installation_docs_boost: 0.2
+  troubleshooting_docs_boost: 0.15
+  ui_docs_boost: 0.18
+  release_notes_reduction: 0.3
+  roadmap_reduction: 0.4
+  planning_docs_reduction: 0.3
+  consequence_reduction: 0.5
+  doc_short_boost: 0.05
+  doc_long_boost: 0.02
+
+# Semantic clues - Past tense
+past_semantic_weights:
+  narrative_blog_reduction: 0.4
+  procedural_boost: 0.25
+  api_boost: 0.2
+  technical_boost: 0.15
+  tutorial_boost: 0.2
+  legal_boost: 0.1
+  academic_boost: 0.05
+  marketing_boost: 0.1
+  narrative_reduction: 0.1
+  past_appropriate_reduction: 0.3
+  software_domain_boost: 0.1
+  user_docs_boost: 0.15
+  training_boost: 0.1
+  legal_domain_boost: 0.05
+  support_domain_reduction: 0.1
+  beginner_audience_boost: 0.1
+  professional_boost: 0.05
+  technical_audience_boost: 0.08
+  installation_docs_boost: 0.2
+  troubleshooting_docs_reduction: 0.1
+  ui_docs_boost: 0.18
+  release_notes_reduction: 0.4
+  changelog_reduction: 0.4
+  bug_report_reduction: 0.3
+  doc_short_boost: 0.05
+  doc_long_boost: 0.02
+
+# Feedback weights
+feedback_weights:
+  accepted_phrase_reduction: 0.3
+  flagged_phrase_boost: 0.2
+  context_acceptable_reduction: 0.2
+  context_problematic_boost: 0.25
+  verb_accepted_reduction: 0.15
+  verb_problematic_boost: 0.2
+  temporal_acceptable_reduction: 0.15
+  high_correction_success_boost: 0.1
+  low_correction_success_reduction: 0.15
+
+# Conditional markers
+conditional_markers:
+  - 'if'
+  - 'unless'
+  - 'when'
+  - 'whenever'
+  - 'should'
+  - 'would'
+  - 'after'
+  - 'before'
+  - 'once'
+  - 'until'
+  - 'while'
+  - 'during'
+  - 'in case'
+  - 'provided'
+  - 'assuming'
+  - 'suppose'
+  - 'supposing'
+
+# Temporal indicators
+temporal_indicators:
+  strong:
+    - 'before this update'
+    - 'before the update'
+    - 'prior to this update'
+    - 'before this release'
+    - 'before the release'
+    - 'in previous versions'
+    - 'in earlier versions'
+    - 'previously'
+    - 'formerly'
+    - 'originally'
+    - 'this issue occurred'
+    - 'this condition occurred'
+    - 'this problem occurred'
+    - 'the issue was'
+    - 'the problem was'
+    - 'the bug was'
+    - 'the error was'
+    - 'users experienced'
+    - 'this caused'
+    - 'this resulted in'
+  
+  weak:
+    - 'in the past'
+    - 'historically'
+    - 'before'
+    - 'earlier'
+    - 'until now'
+    - 'up until'
+    - 'prior to'
+    - 'when'
+    - 'while'
+    - 'during'
+
+# Scheduled indicators (future)
+scheduled_indicators:
+  - 'tomorrow'
+  - 'next week'
+  - 'next month'
+  - 'next year'
+  - 'later'
+  - 'upcoming'
+  - 'planned'
+  - 'scheduled'
+  - 'in the future'
+  - 'eventually'
+  - 'soon'
+  - 'shortly'
+  - 'in time'
+  - 'by then'
+  - 'after that'
+
+# Instruction indicators
+instruction_indicators:
+  - 'step'
+  - 'click'
+  - 'select'
+  - 'enter'
+  - 'type'
+  - 'configure'
+  - 'setup'
+  - 'install'
+  - 'run'
+  - 'execute'
+  - 'perform'
+  - 'do the following'
+
+# Issue indicators
+issue_indicators:
+  - 'failed to'
+  - 'unable to'
+  - 'could not'
+  - 'did not'
+  - 'would not'
+  - 'was not'
+  - 'were not'
+  - 'error'
+  - 'issue'
+  - 'problem'
+  - 'bug'
+
+# Failure indicators
+failure_indicators:
+  - 'failure'
+  - 'error'
+  - 'issue'
+  - 'problem'
+  - 'fault'
+  - 'malfunction'
+  - 'mistake'
+  - 'oversight'
+  - 'omission'
+  - 'neglect'
+  - 'breach'
+  - 'inability'
+  - 'lack'
+  - 'absence'
+  - 'shortage'
+  - 'deficiency'
+  - 'misconfiguration'
+  - 'corruption'
+  - 'damage'
+  - 'loss'
+
+# Causal indicators
+causal_indicators:
+  - 'because'
+  - 'since'
+  - 'due to'
+  - 'owing to'
+  - 'thanks to'
+  - 'as a result'
+  - 'consequently'
+  - 'therefore'
+  - 'thus'
+  - 'hence'
+  - 'then'
+  - 'so'
+  - 'accordingly'
+  - 'subsequently'
+  - 'thereafter'
+
+# Negative past patterns
+negative_past_patterns:
+  - 'was not'
+  - 'were not'
+  - 'did not'
+  - 'could not'
+
+# Negative patterns (future)
+negative_patterns:
+  - 'can not be'
+  - 'cannot be'
+  - 'should not be'
+  - 'must not be'
+
+# Modal combinations
+modal_combinations:
+  - 'will need to'
+  - 'will have to'
+  - 'will be required to'
+
+# Comparison indicators
+comparison_indicators:
+  - 'compared to'
+  - 'unlike'
+  - 'whereas'
+  - 'however'
+  - 'but now'
+
+# Prerequisite keywords
+prerequisite_keywords:
+  - 'prerequisite'
+  - 'before you begin'
+  - 'before you start'
+  - 'requirements'
+  - 'required'
+  - 'what you need'
+  - 'before making changes'
+
+# Perfect auxiliaries (present perfect - valid grammar)
+perfect_auxiliaries:
+  - 'have'
+  - 'has'
+  - 'had'
+
+# Temporal prepositions
+temporal_prepositions:
+  - 'before'
+  - 'after'
+  - 'during'
+  - 'until'
+  - 'since'
+  - 'when'
+
+# Temporal nouns
+temporal_nouns:
+  - 'update'
+  - 'release'
+  - 'version'
+  - 'fix'
+  - 'change'
+  - 'modification'
+
+# Modal verbs for temporal detection
+modal_past_verbs:
+  - 'could'
+  - 'would'
+  - 'might'
+
+# Temporal context verbs
+temporal_context_verbs:
+  - 'reload'
+  - 'access'
+  - 'load'
+  - 'connect'
+  - 'process'
+
+# Action verbs (for future tense detection)
+action_verbs:
+  - 'click'
+  - 'select'
+  - 'enter'
+  - 'type'
+  - 'run'
+  - 'execute'
+  - 'perform'
+  - 'configure'
+  - 'install'
+  - 'setup'
+  - 'create'
+  - 'delete'
+  - 'modify'
+
+# State verbs (for future tense detection)
+state_verbs:
+  - 'be'
+  - 'have'
+  - 'become'
+  - 'remain'
+  - 'continue'
+  - 'appear'
+  - 'seem'
+
+# Subordinate clause markers
+subordinate_markers:
+  - 'when'
+  - 'while'
+  - 'before'
+  - 'after'
+
+# Blog/narrative indicators
+blog_strong_indicators:
+  - 'why we'
+  - 'how we'
+  - 'what we'
+  - 'when we'
+  - 'we switched'
+  - 'we decided'
+  - 'our journey'
+  - 'our experience'
+  - 'our story'
+  - 'we learned'
+  - 'we discovered'
+  - 'we realized'
+  - 'we started'
+
+# Narrative verbs
+narrative_verbs:
+  - 'started'
+  - 'began'
+  - 'decided'
+  - 'learned'
+  - 'discovered'
+  - 'realized'
+  - 'found'
+  - 'tried'
+  - 'built'
+  - 'created'
+
+# First person pronouns
+first_person_pronouns:
+  - 'i'
+  - 'we'
+  - 'my'
+  - 'our'
+  - 'me'
+  - 'us'
+
+# Release notes indicators
+release_notes_indicators:
+  - 'release notes'
+  - 'release'
+  - 'version'
+  - 'changelog'
+  - 'change log'
+  - 'new features'
+  - 'improvements'
+  - 'bug fixes'
+  - 'fixed'
+  - 'resolved'
+  - 'added'
+  - 'removed'
+  - 'deprecated'
+  - 'enhanced'
+  - 'updated'
+
+# Roadmap indicators
+roadmap_indicators:
+  - 'roadmap'
+  - 'future'
+  - 'planned'
+  - 'upcoming'
+  - 'next version'
+  - 'coming soon'
+  - 'will be'
+  - 'scheduled'
+  - 'timeline'
+  - 'milestone'
+
+# Planning indicators
+planning_indicators:
+  - 'plan'
+  - 'planning'
+  - 'strategy'
+  - 'goals'
+  - 'objectives'
+  - 'timeline'
+  - 'schedule'
+  - 'milestone'
+  - 'deliverable'
+  - 'project'
+  - 'initiative'
+
+# Changelog indicators
+changelog_indicators:
+  - 'changelog'
+  - 'change log'
+  - 'changes'
+  - 'fixed'
+  - 'added'
+  - 'removed'
+  - 'changed'
+  - 'deprecated'
+  - 'security'
+  - 'unreleased'
+  - 'version'
+
+# Bug report indicators
+bug_report_indicators:
+  - 'bug'
+  - 'issue'
+  - 'error'
+  - 'problem'
+  - 'defect'
+  - 'fault'
+  - 'reproduce'
+  - 'steps to reproduce'
+  - 'expected'
+  - 'actual'
+  - 'workaround'
+  - 'failed'
+  - 'not working'
+
+# UI documentation indicators
+ui_documentation_indicators:
+  - 'user interface'
+  - 'ui'
+  - 'gui'
+  - 'dialog'
+  - 'window'
+  - 'button'
+  - 'menu'
+  - 'toolbar'
+  - 'tab'
+  - 'panel'
+  - 'form'
+  - 'field'
+  - 'dropdown'
+  - 'checkbox'
+  - 'click'
+  - 'select'
+  - 'enter'
+  - 'type'
+
+# Minimum counts for detection
+min_counts:
+  release_notes: 3
+  roadmap: 2
+  planning: 3
+  changelog: 3
+  bug_report: 3
+  ui_docs: 3
+  blog_strong: 2
+  first_person_threshold: 0.03
+
+# Weak verbs (for nominalization detection)
+weak_verbs:
+  - 'require'
+  - 'provide'
+  - 'offer'
+  - 'give'
+  - 'make'
+  - 'perform'
+  - 'do'
+  - 'conduct'
+  - 'has'
+  - 'have'
+  - 'take'
+  - 'get'
+  - 'receive'
+
+# Nominalization evidence weights
+nominalization_weights:
+  base_evidence: 0.6
+  technical_procedural_boost: 0.2
+  api_docs_boost: 0.15
+  narrative_reduction: 0.2
+  long_sentence_boost: 0.1
+  very_long_sentence_boost: 0.15
+  heading_boost: 0.15
+  list_boost: 0.1
+  code_reduction: 0.5
+  length_thresholds:
+    long: 20
+    very_long: 30
+
+# Content types accepting past tense
+past_appropriate_content_types:
+  - 'release_notes'
+  - 'changelog'
+  - 'bug_report'
+  - 'issue_report'
+
+# Verb alternatives for verb derivation from nouns
+verb_derivation_suffixes:
+  tion:
+    strip: 4
+    add_te: true
+    add_e: true
+  sion:
+    strip: 4
+    add_e: true
+  ment:
+    strip: 4
+    check_e: true
+  ance:
+    strip: 4
+    check_t: true
+  ence:
+    strip: 4
+    add_e: true
+  al:
+    strip: 2
+    add_e: true
+  ing:
+    strip: 3
+    base_only: true
+
+# Subject types for conjugation
+third_person_singular_subjects:
+  - 'he'
+  - 'she'
+  - 'it'
+  - 'system'
+  - 'server'
+  - 'application'
+  - 'service'
+  - 'documentation'
+  - 'manual'
+  - 'configuration'
+  - 'database'
+  - 'interface'
+  - 'platform'
+  - 'framework'
+  - 'method'
+  - 'function'
+  - 'process'
+  - 'this'
+  - 'that'
+
+# Plural subjects/pronouns
+plural_subjects:
+  - 'i'
+  - 'you'
+  - 'we'
+  - 'they'
+
+# Subject dependencies for agreement
+subject_dependencies:
+  - 'nsubj'
+  - 'nsubjpass'
+
+# Verb tags for agreement
+verb_tags:
+  third_singular: 'VBZ'
+  plural_base: 'VBP'
+  base_form: 'VB'
+  past: 'VBD'
+  modal: 'MD'
+  gerund: 'VBG'
+  past_participle: 'VBN'
+
+# Noun tags
+noun_tags:
+  plural_common: 'NNS'
+  plural_proper: 'NNPS'
+  singular_common: 'NN'
+  singular_proper: 'NNP'
+
+# Plural pronouns
+plural_pronouns:
+  - 'they'
+  - 'we'
+  - 'these'
+  - 'those'
+
+# Singular pronouns
+singular_pronouns:
+  - 'he'
+  - 'she'
+  - 'it'
+  - 'this'
+  - 'that'
+
+# Collective nouns (accept both singular/plural)
+collective_nouns:
+  - 'team'
+  - 'group'
+  - 'committee'
+  - 'staff'
+  - 'family'
+  - 'company'
+  - 'government'
+  - 'organization'
+  - 'board'
+  - 'council'
+  - 'jury'
+  - 'audience'
+  - 'crowd'
+  - 'public'
+  - 'majority'
+  - 'minority'
+
+# Agreement evidence weights
+agreement_weights:
+  base_evidence: 0.8
+  distance_penalty: 0.2
+  prep_phrase_penalty: 0.1
+  immediate_follow_boost: 0.1
+  code_block_reduction: 0.5
+  distance_threshold: 5
+
+# Entity types for future/past tense
+entity_types:
+  organizational:
+    - 'ORG'
+    - 'PRODUCT'
+    - 'WORK_OF_ART'
+  personal:
+    - 'PERSON'
+    - 'GPE'
+  temporal:
+    - 'EVENT'
+    - 'DATE'
+    - 'TIME'
+  numeric:
+    - 'CARDINAL'
+    - 'ORDINAL'
+
+# Admonition types
+admonition_types:
+  informational:
+    - 'NOTE'
+    - 'TIP'
+    - 'HINT'
+  warning:
+    - 'WARNING'
+    - 'CAUTION'
+    - 'DANGER'
+  important:
+    - 'IMPORTANT'
+    - 'ATTENTION'
+
+# Nominalization to verb mappings
+nominalization_to_verb:
+  support: 'supports'
+  assistance: 'assists'
+  help: 'helps'
+  aid: 'aids'
+  configuration: 'configures'
+  installation: 'installs'
+  deployment: 'deploys'
+  implementation: 'implements'
+  execution: 'executes'
+  operation: 'operates'
+  management: 'manages'
+  requirement: 'requires'
+  provision: 'provides'
+  performance: 'performs'
+  maintenance: 'maintains'
+  creation: 'creates'
+  deletion: 'deletes'
+  modification: 'modifies'
+  validation: 'validates'
+  verification: 'verifies'
+  authentication: 'authenticates'
+  authorization: 'authorizes'
+  notification: 'notifies'
+  communication: 'communicates'
+  connection: 'connects'
+  disconnection: 'disconnects'
+  transmission: 'transmits'
+  reception: 'receives'
+  processing: 'processes'
+  analysis: 'analyzes'
+  evaluation: 'evaluates'
+  assessment: 'assesses'
+  decision: 'decides'
+  determination: 'determines'
+  selection: 'selects'
+  identification: 'identifies'
+  recognition: 'recognizes'
+  detection: 'detects'
+  monitoring: 'monitors'
+  tracking: 'tracks'
+  logging: 'logs'
+  recording: 'records'
+
+# Verb alternatives for negative constructions
+negative_verb_alternatives:
+  overlook: 'address'
+  ignore: 'consider'
+  miss: 'include'
+  skip: 'complete'
+  avoid: 'ensure'
+  neglect: 'maintain'
+
+# Action noun suffixes
+action_noun_suffixes:
+  - 'tion'
+  - 'sion'
+  - 'ment'
+  - 'ance'
+  - 'ence'
+  - 'al'
+  - 'age'
+  - 'ery'
+  - 'ing'
+  - 'ure'
+
+# Verb-noun forms (nouns identical to verb forms)
+verb_noun_forms:
+  - 'support'
+  - 'access'
+  - 'process'
+  - 'control'
+  - 'display'
+  - 'output'
+  - 'input'
+  - 'transfer'
+  - 'test'
+  - 'check'
+  - 'review'
+  - 'backup'
+  - 'update'
+  - 'upgrade'
+  - 'download'
+  - 'upload'
+  - 'login'
+  - 'logout'
+  - 'setup'
+  - 'shutdown'
+  - 'startup'
+  - 'rollback'
+  - 'rollout'
+  - 'deployment'
+
+# Noun verb base evidence
+noun_verb_base_evidence: 0.8
+
+# Noun verb content type weights
+noun_verb_content_weights:
+  documentation_boost: 0.1
+  informal_reduction: 0.2
+
+# Irregular past participles
+irregular_past_participles:
+  configure: 'configured'
+  install: 'installed'
+  deploy: 'deployed'
+  address: 'addressed'
+  consider: 'considered'
+  include: 'included'
+
+# Descriptive actors (verb → actors mapping)
+descriptive_actors:
+  document:
+    - 'the documentation'
+    - 'the manual'
+    - 'the guide'
+  describe:
+    - 'the documentation'
+    - 'the specification'
+    - 'the manual'
+  specify:
+    - 'the configuration'
+    - 'the settings'
+    - 'the parameters'
+  define:
+    - 'the system'
+    - 'the configuration'
+    - 'the specification'
+  configure:
+    - 'the system'
+    - 'the application'
+    - 'the software'
+  provide:
+    - 'the system'
+    - 'the platform'
+    - 'the service'
+  support:
+    - 'the system'
+    - 'the platform'
+    - 'the framework'
+  manage:
+    - 'the system'
+    - 'the application'
+    - 'the service'
+  store:
+    - 'the database'
+    - 'the data store'
+  save:
+    - 'the database'
+    - 'the data store'
+  retrieve:
+    - 'the database'
+    - 'the data store'
+  default:
+    - 'the system'
+    - 'the application'
+
+# Verb alternatives for stylistic appropriateness
+verb_stylistic_alternatives:
+  document: 'describe'
+  describe: 'detail'
+  specify: 'define'
+  define: 'outline'
+  configure: 'establish'
+  manage: 'handle'
+  process: 'handle'
+  support: 'enable'
+
+# Same-root awkward pairs (actor, verb)
+same_root_awkward_pairs:
+  - ['documentation', 'document']
+  - ['configuration', 'configure']
+  - ['specification', 'specify']
+  - ['management', 'manage']
+  - ['processing', 'process']
+  - ['support', 'support']
+
+# Context words for database operations
+database_context_words:
+  - 'database'
+  - 'data'
+  - 'record'
+
+# Database operation verbs
+database_verbs:
+  - 'store'
+  - 'save'
+  - 'retrieve'
+
+# Max actors to return
+max_actors: 2
+

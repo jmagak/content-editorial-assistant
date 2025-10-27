@@ -104,9 +104,19 @@ class SecondPersonRule(BaseLanguageRule):
         - Context-aware domain validation
         - Universal threshold compliance (≥0.35)
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp:
             return errors
+
+        # === SURGICAL ZERO FALSE POSITIVE GUARD ===
+        # CRITICAL: Code blocks are exempt from prose style rules
+        # Check document-level context first
+        if context and context.get('block_type') in ['code_block', 'literal_block', 'inline_code']:
+            return []  # Skip analysis entirely for code blocks
 
         for i, sentence in enumerate(sentences):
             # Handle both string and SpaCy Doc inputs for compatibility
@@ -120,7 +130,7 @@ class SecondPersonRule(BaseLanguageRule):
             if not sent_doc:
                 continue
             
-            # Apply zero false positive guards first
+            # Apply zero false positive guards first (sentence-level)
             if self._apply_zero_false_positive_guards(sent_text, context):
                 continue
             
@@ -151,8 +161,24 @@ class SecondPersonRule(BaseLanguageRule):
         block_type = document_context.get('block_type', '').lower()
         content_type = document_context.get('content_type', '').lower()
         
-        # Guard 1: Code blocks and technical identifiers
+        # Guard 1: Code blocks and technical identifiers (context-based)
         if block_type in ['code_block', 'literal_block', 'inline_code']:
+            return True
+        
+        # Guard 1b: Code-like content detection (heuristic-based fallback)
+        # Detect YAML, JSON, XML, code syntax patterns
+        sentence_stripped = sentence_text.strip()
+        code_indicators = [
+            sentence_stripped.startswith(('apiVersion:', 'kind:', 'metadata:', 'spec:', 'name:', 'namespace:')),  # YAML/K8s
+            sentence_stripped.startswith(('{', '[', '<')),  # JSON/XML
+            ': "' in sentence_text and sentence_text.endswith('"'),  # YAML value pattern (key: "value")
+            sentence_stripped.startswith(('$', 'def ', 'function ', 'class ', 'import ', 'from ')),  # Code
+            'ref:' in sentence_text and ('name:' in sentence_text or 'arn:' in sentence_text),  # Config files
+            'name:' in sentence_text and ('"' in sentence_text or "'" in sentence_text),  # YAML name fields
+            sentence_text.count(':') >= 2 and sentence_text.count('"') >= 2,  # Structured data
+            sentence_stripped.startswith(('arn:', 'region:', 'secret:', 'auth:')),  # AWS/Cloud config
+        ]
+        if any(code_indicators):
             return True
         
         # Guard 2: Direct quotations where first person is appropriate
@@ -196,6 +222,10 @@ class SecondPersonRule(BaseLanguageRule):
 
         for token in doc:
             if token.lemma_.lower() in first_person_pronouns:
+                # SURGICAL GUARD: Skip tokens inside inline code (backticks)
+                if self._is_token_in_inline_code(token, sentence_text):
+                    continue
+                
                 # Calculate evidence score for this first person usage
                 evidence_score = self._calculate_first_person_evidence(token, doc, sentence_text, text, context)
                 
@@ -232,6 +262,10 @@ class SecondPersonRule(BaseLanguageRule):
 
         for token in doc:
             if token.lemma_.lower() in self.third_person_substitutes:
+                # SURGICAL GUARD: Skip tokens inside inline code (backticks)
+                if self._is_token_in_inline_code(token, sentence_text):
+                    continue
+                
                 # Check for multi-word exceptions first
                 if token.i + 1 < len(doc):
                     next_token = doc[token.i + 1]
@@ -618,6 +652,37 @@ class SecondPersonRule(BaseLanguageRule):
             return nlp(sentence)
         except Exception:
             return None
+    
+    def _is_token_in_inline_code(self, token, sentence_text: str) -> bool:
+        """
+        Check if a token appears inside inline code markers (backticks).
+        
+        This is a surgical guard to prevent flagging code identifiers like
+        `my-secret`, `user-id`, etc. that appear in technical documentation.
+        
+        Args:
+            token: SpaCy token to check
+            sentence_text: The full sentence text
+            
+        Returns:
+            bool: True if token is inside backticks (inline code)
+        """
+        # Find the token's position in the sentence
+        token_start = token.idx
+        token_end = token.idx + len(token.text)
+        
+        # Count backticks before and after the token
+        backticks_before = sentence_text[:token_start].count('`')
+        backticks_after = sentence_text[token_end:].count('`')
+        
+        # If there's an odd number of backticks before the token,
+        # it means the token is inside a backtick-enclosed section
+        if backticks_before % 2 == 1:
+            # Verify there's at least one backtick after to close it
+            if backticks_after > 0:
+                return True
+        
+        return False
     
     # Evidence calculation helper methods
     def _find_nearby_verb(self, token, doc):

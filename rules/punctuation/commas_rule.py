@@ -5,6 +5,7 @@ Based on IBM Style Guide topic: "Commas"
 """
 from typing import List, Dict, Any, Optional
 from .base_punctuation_rule import BasePunctuationRule
+from .services.punctuation_config_service import get_punctuation_config
 
 try:
     from spacy.tokens.doc import Doc
@@ -34,6 +35,10 @@ class CommasRule(BasePunctuationRule):
         - Comma splice detection with structural analysis
         - Missing commas after introductory clauses
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         context = context or {}
         if not nlp:
@@ -350,34 +355,32 @@ class CommasRule(BasePunctuationRule):
 
     def _get_list_items(self, conjunction: 'Token') -> List['Token']:
         """
-        Traverses the dependency tree from a conjunction to find all items in a potential list.
+        Traverses the dependency tree to accurately find all items in a list.
+        Handles complex coordinations correctly.
         """
-        list_items = set()
-        
-        # The head of the conjunction is the item right before it
+        # The head of the conjunction is the last item in the list before the 'and'/'or'.
         head = conjunction.head
-        list_items.add(head)
-
-        # Add direct conjuncts of the head
-        for child in head.children:
-            if child.dep_ == 'conj':
-                list_items.add(child)
-
-        # Traverse up the tree to find the root of the list and its conjuncts
-        current = head
-        while current.dep_ == 'conj' and current.head != current:
-            current = current.head
-            list_items.add(current)
-            for child in current.children:
-                if child.dep_ == 'conj':
-                    list_items.add(child)
         
-        # Final check for conjuncts of the root item
-        for child in current.children:
-            if child.dep_ == 'conj':
-                list_items.add(child)
-                
-        return sorted(list(list_items), key=lambda x: x.i)
+        # The list includes the head and all other tokens that are coordinated with it.
+        # Use SpaCy's built-in conjuncts property for accuracy
+        list_items = [head]
+        list_items.extend(head.conjuncts)
+        
+        # Also, check if the head itself is part of a larger coordination.
+        # This handles cases like "A, B, and C" where B might be a conjunct of A
+        if head.dep_ == 'conj':
+            main_head = head.head
+            if main_head not in list_items:
+                list_items.append(main_head)
+            # Add all conjuncts of the main head
+            for conj in main_head.conjuncts:
+                if conj not in list_items:
+                    list_items.append(conj)
+        
+        # Remove duplicates and sort by position in the sentence
+        unique_items = sorted(list(set(list_items)), key=lambda t: t.i)
+        
+        return unique_items
 
     def _has_potential_ambiguity(self, list_items: List['Token']) -> bool:
         """
@@ -396,27 +399,187 @@ class CommasRule(BasePunctuationRule):
     def _is_potential_comma_splice(self, comma: 'Token', sent: 'Span') -> bool:
         """
         Check if a comma potentially creates a comma splice.
+        
+        PRODUCTION FIX: Added zero false positive guards for introductory elements and relative clauses.
+        Guards protect against false positives from dependent clauses, adverbial phrases, and relative clauses.
+        
+        === ZERO FALSE POSITIVE GUARDS ===
+        Current count: 3/5
         """
+        # GUARD 1: Introductory dependent clauses (subordinating conjunctions)
+        # Test: test_guard_1_subordinating_conjunctions()
+        # Reason: Grammatical fact - dependent clauses starting with subordinating conjunctions REQUIRE a comma before the main clause
+        # Pattern: "If X, Y", "When X, Y", "Although X, Y"
+        
+        # Load subordinating conjunctions from YAML (scalable, production-ready)
+        config_service = get_punctuation_config()
+        grammatical_patterns = config_service.get_grammatical_patterns()
+        subordinating_conjunctions = grammatical_patterns.get('subordinating_conjunctions', [])
+        
+        # Convert to set for faster lookup
+        subord_conj_set = set(conj.lower() for conj in subordinating_conjunctions)
+        
+        # Check if sentence starts with subordinating conjunction
+        if sent and len(sent) > 0:
+            first_token_lemma = sent[0].lemma_.lower()
+            if first_token_lemma in subord_conj_set:
+                return False  # EXIT EARLY: Dependent clause + comma + main clause is correct grammar
+        
+        # GUARD 2: Introductory adverbial phrases
+        # Test: test_guard_2_introductory_adverbial_phrases()
+        # Reason: Grammatical fact - introductory adverbial phrases REQUIRE a comma before the main clause
+        # Pattern: "By default, X", "However, X", "Therefore, X"
+        
+        # Common introductory adverbial phrases that require commas
+        introductory_adverbials = {
+            'by default', 'however', 'therefore', 'meanwhile', 'moreover',
+            'furthermore', 'nevertheless', 'consequently', 'otherwise',
+            'for example', 'for instance', 'in addition', 'in contrast',
+            'in fact', 'in general', 'in particular', 'on the other hand',
+            'as a result', 'at first', 'at last', 'in the end'
+        }
+        
+        # Check if sentence starts with an introductory adverbial phrase
+        if sent and len(sent) >= 2:
+            # Check single-word adverbials (e.g., "However,")
+            first_token_lower = sent[0].text.lower()
+            if first_token_lower in introductory_adverbials:
+                return False  # EXIT EARLY: Introductory adverbial + comma + main clause is correct grammar
+            
+            # Check two-word adverbials (e.g., "By default,")
+            if len(sent) >= 2:
+                two_word_phrase = f"{sent[0].text.lower()} {sent[1].text.lower()}"
+                if two_word_phrase in introductory_adverbials:
+                    return False  # EXIT EARLY: Introductory adverbial phrase + comma is correct
+            
+            # Check three-word adverbials (e.g., "On the other hand,")
+            if len(sent) >= 3:
+                three_word_phrase = f"{sent[0].text.lower()} {sent[1].text.lower()} {sent[2].text.lower()}"
+                if three_word_phrase in introductory_adverbials:
+                    return False  # EXIT EARLY: Introductory adverbial phrase + comma is correct
+        
+        # === SURGICAL GUARD: Coordinating Conjunction After Comma ===
+        # CRITICAL: Comma + coordinating conjunction (and, but, or, etc.) is CORRECT grammar
+        # Example: "The system is running, and it provides authentication."
+        # This is NOT a comma splice - it's the standard way to join independent clauses.
+        if comma.i + 1 < sent.end:
+            token_after_comma = sent[comma.i + 1]
+            if token_after_comma.pos_ == 'CCONJ':  # Coordinating conjunction
+                return False  # EXIT EARLY: Comma + conjunction is grammatically correct
+        
+        # === CORE COMMA SPLICE DETECTION LOGIC ===
+        # A true comma splice joins two independent clauses with only a comma.
+        # Each independent clause must have:
+        #   1. A main verb (VERB or AUX)
+        #   2. Its own subject (nsubj or nsubjpass)
+        #   3. Not be in a dependency relationship (one dependent on the other)
+        
         if comma.i >= sent.end - 1:
             return False
         
-        # Look for independent clause after comma
+        # STEP 1: Find the main verb BEFORE the comma
+        first_clause_verb = None
+        for t in sent[:comma.i]:
+            # Look for VERB or AUX that has its own subject
+            if t.pos_ in ('VERB', 'AUX'):
+                has_own_subject = any(c.dep_ in ('nsubj', 'nsubjpass') for c in t.children)
+                if has_own_subject:
+                    # Prefer ROOT or main clause verbs
+                    if t.dep_ in ('ROOT', 'ccomp', 'conj'):
+                        first_clause_verb = t
+                        break
+                    # Fallback to any verb with subject
+                    if not first_clause_verb:
+                        first_clause_verb = t
+        
+        if not first_clause_verb:
+            return False
+        
+        # === ZERO FALSE POSITIVE GUARD: Relative Clauses and Subordinate Clauses ===
+        if comma.i + 1 < sent.end:
+            token_after_comma = sent[comma.i + 1]
+            
+            # Relative pronouns and subordinating conjunctions that introduce dependent clauses
+            subordinating_words = {
+                # Relative pronouns
+                'that', 'which', 'who', 'whom', 'whose', 'where', 'when',
+                # Subordinating conjunctions  
+                'while', 'if', 'because', 'although', 'though', 'unless', 'since',
+                'after', 'before', 'as', 'until', 'whereas', 'whenever', 'wherever'
+            }
+            
+            if token_after_comma.lemma_.lower() in subordinating_words:
+                return False
+        
+        # === ZERO FALSE POSITIVE GUARD: Non-restrictive phrases like "such as" ===
+        # GUARD 4: Non-restrictive exemplification phrases
+        # Pattern: "mechanisms, such as DHCP snooping, that prevent..."
+        # Reason: Phrases like "such as" introduce non-restrictive clauses that correctly use commas
+        if comma.i + 2 < len(sent.doc):
+            token_after_comma = sent.doc[comma.i + 1]
+            second_token_after = sent.doc[comma.i + 2]
+            
+            # Check for "such as" pattern
+            if token_after_comma.lower_ == 'such' and second_token_after.lower_ == 'as':
+                return False  # EXIT EARLY: This is a non-restrictive phrase, not a comma splice
+            
+            # Also check for other non-restrictive exemplification phrases
+            non_restrictive_phrases = {
+                ('for', 'example'),
+                ('for', 'instance'),
+                ('such', 'as'),
+                ('including', 'but'),  # "including but not limited to"
+                ('like', 'the'),       # "like the following"
+            }
+            
+            phrase_tuple = (token_after_comma.lower_, second_token_after.lower_)
+            if phrase_tuple in non_restrictive_phrases:
+                return False  # EXIT EARLY: Non-restrictive exemplification phrase
+        
+        # STEP 2: Find the main verb AFTER the comma
         second_clause_verb = None
         for t in sent[comma.i + 1:]:
-            if t.pos_ == 'VERB' and t.dep_ != 'amod':
-                second_clause_verb = t
-                break
+            # Look for VERB or AUX that has its own subject
+            if t.pos_ in ('VERB', 'AUX'):
+                has_own_subject = any(c.dep_ in ('nsubj', 'nsubjpass') for c in t.children)
+                if has_own_subject:
+                    # Prefer ROOT or main clause verbs
+                    if t.dep_ in ('ROOT', 'ccomp', 'conj'):
+                        second_clause_verb = t
+                        break
+                    # Fallback to any verb with subject
+                    if not second_clause_verb:
+                        second_clause_verb = t
         
         if not second_clause_verb:
             return False
         
-        # Check if this verb has its own subject
-        has_subject = any(c.dep_ in ('nsubj', 'nsubjpass') for c in second_clause_verb.children)
+        # STEP 3: Check if this is a comma splice vs. legitimate structure
+        # In comma splices, spaCy parses one clause as ccomp/conj of the other
+        # We ALLOW ccomp/conj (these ARE splices), but REJECT true subordination
         
-        # Check if the first clause is also independent
-        has_first_subject = any(c.dep_ in ('nsubj', 'nsubjpass') for c in comma.head.children)
+        # Check dependency relationship
+        if second_clause_verb.head == first_clause_verb:
+            # Second verb depends on first - check if it's a comma splice pattern
+            # ccomp = clausal complement (comma splice pattern)
+            # conj = conjunction (comma splice pattern)
+            # advcl = adverbial clause (legitimate - not a splice)
+            # xcomp = open clausal complement (legitimate - not a splice)
+            if second_clause_verb.dep_ in ('ccomp', 'conj'):
+                return True  # Comma splice pattern!
+            else:
+                return False  # Legitimate subordination
         
-        return has_subject and has_first_subject
+        if first_clause_verb.head == second_clause_verb:
+            # First verb depends on second - check if it's a comma splice pattern
+            if first_clause_verb.dep_ in ('ccomp', 'conj'):
+                return True  # Comma splice pattern!
+            else:
+                return False  # Legitimate subordination
+        
+        # STEP 4: Both clauses have verbs with subjects and no dependency relationship
+        # This could be a comma splice (parallel independent clauses)
+        return True
 
     def _is_legitimate_dependent_clause(self, sent: 'Span', comma: 'Token') -> bool:
         """

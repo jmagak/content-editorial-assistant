@@ -115,6 +115,7 @@ function createListBlockElement(block, displayIndex) {
             let content = renderSafeTableCellHtml(item.content);
             
             let nestedContent = '';
+            
             if (item.children && item.children.length > 0) {
                 item.children.forEach(child => {
                     if (child.block_type === 'olist' || child.block_type === 'ulist') {
@@ -129,18 +130,29 @@ function createListBlockElement(block, displayIndex) {
                     else if (child.block_type === 'dlist') {
                         nestedContent += createDescriptionListBlockElement(child, -1); // -1 index to signify nested
                     }
+                    // **FIX**: Only render blocks that are actually analyzed
+                    // Skip code blocks (listing, literal) since they're not analyzed anyway
+                    else if (!child.should_skip_analysis) {
+                        // Render the nested block WITH its own errors inline
+                        nestedContent += renderNestedBlockWithErrors(child);
+                    }
+                    // If block is skipped (like code blocks), we don't render it at all
                 });
             }
+            
+            // Show ONLY the list item's own errors, not child errors
+            // Child blocks will display their own errors inline
+            const itemErrors = item.errors || [];
             
             return `
                 <li>
                     ${content}
-                    ${nestedContent}
-                    ${item.errors && item.errors.length > 0 ? `
+                    ${itemErrors.length > 0 ? `
                         <div class="pf-v5-l-stack pf-m-gutter pf-v5-u-ml-lg pf-v5-u-mt-sm">
-                            ${item.errors.map(error => createInlineError(error)).join('')}
+                            ${itemErrors.map(error => createInlineError(error)).join('')}
                         </div>
                     ` : ''}
+                    ${nestedContent}
                 </li>
             `;
         }).join('');
@@ -294,22 +306,51 @@ function createTableBlockElement(block, displayIndex, allBlocks = []) {
         admonition_type: block.admonition_type
     });
     
-    const tableCells = [];
-    for (let i = displayIndex + 1; i < allBlocks.length; i++) {
-        if (allBlocks[i].block_type === 'table_cell') {
-            tableCells.push(allBlocks[i]);
-        } else {
-            break; 
+    // **FIX**: Count errors recursively from nested table structure
+    // Since cells are no longer in the flat array, we need to traverse the hierarchy
+    const countErrorsRecursively = (node) => {
+        let count = 0;
+        
+        // Count errors on this node
+        if (node.errors && Array.isArray(node.errors)) {
+            count += node.errors.length;
         }
+        
+        // Recursively count errors in children
+        if (node.children && Array.isArray(node.children)) {
+            node.children.forEach(child => {
+                count += countErrorsRecursively(child);
+            });
+        }
+        
+        return count;
+    };
+    
+    let totalIssues = countErrorsRecursively(block);
+    
+    // Also get cells for error display (even though they're not in allBlocks anymore)
+    const tableCells = [];
+    if (block.children && Array.isArray(block.children)) {
+        block.children.forEach(row => {
+            if (row.block_type === 'table_row' && row.children) {
+                row.children.forEach(cell => {
+                    if (cell.block_type === 'table_cell') {
+                        tableCells.push(cell);
+                    }
+                });
+            }
+        });
     }
-
-    let totalIssues = block.errors ? block.errors.length : 0;
-    tableCells.forEach(cell => {
-        if (cell.errors) totalIssues += cell.errors.length;
-    });
     
     const status = totalIssues > 0 ? 'red' : 'green';
     const statusText = totalIssues > 0 ? `${totalIssues} Issue(s)` : 'Clean';
+    
+    // Calculate priority for rewrite button (similar to other blocks)
+    const priority = totalIssues > 0 ? (totalIssues >= 5 ? 'red' : 'yellow') : 'green';
+    
+    // Generate rewrite button if table has errors
+    // For tables, we need to pass the actual error count since errors are in nested blocks
+    const rewriteButton = totalIssues > 0 ? generateTableRewriteButton(displayIndex, totalIssues, priority) : '';
     
     const tableHtml = parseTableContent(block);
     
@@ -377,44 +418,84 @@ function createTableBlockElement(block, displayIndex, allBlocks = []) {
                 
                 ${totalIssues > 0 ? `
                 <div class="pf-v5-u-mt-lg">
-                    <div class="pf-v5-c-card pf-m-plain">
-                        <div class="pf-v5-c-card__header">
-                            <div class="pf-v5-c-card__header-main">
-                                <h4 class="pf-v5-c-title pf-m-md">
-                                    <i class="fas fa-exclamation-triangle pf-v5-u-mr-sm" style="color: var(--app-danger-color);"></i>
-                                    ${totalIssues} Issue${totalIssues > 1 ? 's' : ''} Found
-                                </h4>
-                            </div>
-                        </div>
-                        <div class="pf-v5-c-card__body">
-                            <div class="pf-v5-l-stack pf-m-gutter">
-                                ${(block.errors || []).map(error => createInlineError(error)).join('')}
-                                ${tableCells.filter(cell => cell.errors && cell.errors.length > 0).map(cell => `
-                                    <div class="pf-v5-c-alert pf-m-inline pf-m-info pf-v5-u-mb-sm">
-                                        <div class="pf-v5-c-alert__icon">
-                                            <i class="fas fa-table" aria-hidden="true"></i>
-                                        </div>
-                                        <div class="pf-v5-c-alert__title">
-                                            <span class="pf-v5-u-font-size-sm">In table cell: "${renderSafeTableCellHtml(cell.content)}"</span>
-                                        </div>
-                                        <div class="pf-v5-c-alert__description">
-                                            ${(cell.errors || []).map(error => `
-                                                <div class="pf-v5-c-helper-text pf-m-error pf-v5-u-mb-sm">
-                                                    <div class="pf-v5-c-helper-text__item pf-m-error">
-                                                        <span class="pf-v5-c-helper-text__item-icon">
-                                                            <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
-                                                        </span>
-                                                        <span class="pf-v5-c-helper-text__item-text">
-                                                            <strong>${error.rule_id || 'Style'}:</strong> ${error.message || error.text || 'Style issue detected'}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            `).join('')}
-                                        </div>
-                                    </div>
-                                `).join('')}
-                            </div>
-                        </div>
+                    <div class="pf-v5-l-stack pf-m-gutter">
+                        ${(block.errors || []).map(error => createInlineError(error)).join('')}
+                                ${(() => {
+                                    // Collect all errors from table cells and their nested blocks with precise location
+                                    const allTableErrors = [];
+                                    
+                                    // Get row labels from first column for better context
+                                    const rowLabels = [];
+                                    if (block.children && Array.isArray(block.children)) {
+                                        block.children.forEach((row, rowIdx) => {
+                                            if (row.block_type === 'table_row' && row.children && row.children.length > 0) {
+                                                // Use first cell as row label
+                                                const firstCell = row.children[0];
+                                                const label = firstCell.content || firstCell.text || `Row ${rowIdx + 1}`;
+                                                rowLabels.push(label.trim().substring(0, 50)); // Truncate long labels
+                                            }
+                                        });
+                                    }
+                                    
+                                    // Now traverse and collect errors with precise location
+                                    if (block.children && Array.isArray(block.children)) {
+                                        block.children.forEach((row, rowIdx) => {
+                                            if (row.block_type === 'table_row' && row.children) {
+                                                row.children.forEach((cell, colIdx) => {
+                                                    if (cell.block_type === 'table_cell') {
+                                                        const rowLabel = rowLabels[rowIdx] || `Row ${rowIdx + 1}`;
+                                                        const columnLabel = `Column ${colIdx + 1}`;
+                                                        
+                                                        // Errors from cell itself
+                                                        if (cell.errors && cell.errors.length > 0) {
+                                                            cell.errors.forEach(error => {
+                                                                allTableErrors.push({
+                                                                    ...error,
+                                                                    row_index: rowIdx + 1,
+                                                                    col_index: colIdx + 1,
+                                                                    row_label: rowLabel,
+                                                                    column_label: columnLabel
+                                                                });
+                                                            });
+                                                        }
+                                                        
+                                                        // Errors from nested blocks (lists, notes, paragraphs)
+                                                        if (cell.children && Array.isArray(cell.children)) {
+                                                            cell.children.forEach(child => {
+                                                                if (child.errors && child.errors.length > 0) {
+                                                                    child.errors.forEach(error => {
+                                                                        allTableErrors.push({
+                                                                            ...error,
+                                                                            row_index: rowIdx + 1,
+                                                                            col_index: colIdx + 1,
+                                                                            row_label: rowLabel,
+                                                                            column_label: columnLabel,
+                                                                            nested_block_type: child.block_type
+                                                                        });
+                                                                    });
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    }
+                                    
+                                    // Render all errors with precise location context
+                                    return allTableErrors.map(error => {
+                                        // Build precise location string
+                                        const location = `📍 Row ${error.row_index}, ${error.column_label}`;
+                                        const rowContext = error.row_label ? ` (${error.row_label})` : '';
+                                        const blockType = error.nested_block_type ? ` → ${error.nested_block_type}` : '';
+                                        
+                                        const originalMessage = error.message || error.text || 'Style issue detected';
+                                        error.message = `${location}${rowContext}${blockType}: ${originalMessage}`;
+                                        
+                                        return createInlineError(error);
+                                    }).join('');
+                                })()}
+                        ${rewriteButton}
                     </div>
                 </div>
                 ` : ''}
@@ -507,7 +588,7 @@ function parseStructuredTable(children) {
         if (child.block_type === 'table_row' && child.children) {
             const cells = child.children
                 .filter(cell => cell.block_type === 'table_cell')
-                .map(cell => cell.content || '');
+                .map(cell => renderCellContent(cell));
             if (cells.length > 0) {
                 rows.push(cells);
             }
@@ -515,6 +596,136 @@ function parseStructuredTable(children) {
     }
     
     return generatePatternFlyTable(rows, true);
+}
+
+/**
+ * Render cell content including nested blocks (paragraphs, lists, notes, etc.)
+ * This makes table rendering future-proof for any nested content type
+ */
+function renderCellContent(cell) {
+    // If cell has nested children (a| style cell with structured content)
+    if (cell.children && cell.children.length > 0) {
+        return cell.children.map(block => renderNestedBlock(block)).join('');
+    }
+    
+    // Otherwise, just return plain content
+    return escapeHtml(cell.content || '');
+}
+
+/**
+ * Render a nested block inside a table cell with appropriate HTML formatting
+ * Future-proof: handles any block type (paragraphs, lists, notes, code, quotes, etc.)
+ */
+function renderNestedBlock(block) {
+    const blockType = block.block_type;
+    
+    // Paragraph
+    if (blockType === 'paragraph') {
+        return `<p style="margin: 0.5rem 0;">${escapeHtml(block.content || '')}</p>`;
+    }
+    
+    // Unordered List
+    if (blockType === 'ulist') {
+        const items = block.children || [];
+        const listItems = items
+            .filter(item => item.block_type === 'list_item')
+            .map(item => `<li>${escapeHtml(item.content || '')}</li>`)
+            .join('');
+        return `<ul style="margin: 0.5rem 0; padding-left: 1.5rem;">${listItems}</ul>`;
+    }
+    
+    // Ordered List
+    if (blockType === 'olist') {
+        const items = block.children || [];
+        const listItems = items
+            .filter(item => item.block_type === 'list_item')
+            .map(item => `<li>${escapeHtml(item.content || '')}</li>`)
+            .join('');
+        return `<ol style="margin: 0.5rem 0; padding-left: 1.5rem;">${listItems}</ol>`;
+    }
+    
+    // Admonition (NOTE, TIP, WARNING, etc.)
+    if (blockType === 'admonition') {
+        const admonType = block.admonition_type || 'NOTE';
+        const icon = admonType === 'NOTE' ? 'fa-info-circle' : 
+                     admonType === 'TIP' ? 'fa-lightbulb' :
+                     admonType === 'WARNING' ? 'fa-exclamation-triangle' :
+                     admonType === 'IMPORTANT' ? 'fa-exclamation-circle' :
+                     admonType === 'CAUTION' ? 'fa-fire' : 'fa-info-circle';
+        const color = admonType === 'WARNING' || admonType === 'CAUTION' ? 'var(--pf-v5-global--warning-color--100)' : 
+                      'var(--pf-v5-global--info-color--100)';
+        
+        return `
+            <div style="
+                margin: 0.5rem 0;
+                padding: 0.75rem;
+                background-color: ${color}15;
+                border-left: 3px solid ${color};
+                border-radius: 4px;
+                display: flex;
+                align-items: start;
+                gap: 0.5rem;
+            ">
+                <i class="fas ${icon}" style="color: ${color}; margin-top: 0.2rem;"></i>
+                <div style="flex: 1;">
+                    <strong style="color: ${color};">${admonType}:</strong> ${escapeHtml(block.content || '')}
+                </div>
+            </div>
+        `;
+    }
+    
+    // Code/Listing block
+    if (blockType === 'listing' || blockType === 'literal') {
+        return `
+            <pre style="
+                margin: 0.5rem 0;
+                padding: 0.75rem;
+                background-color: var(--pf-v5-global--BackgroundColor--200);
+                border: 1px solid var(--pf-v5-global--BorderColor--100);
+                border-radius: 4px;
+                overflow-x: auto;
+                font-family: monospace;
+                font-size: 0.875rem;
+            "><code>${escapeHtml(block.content || '')}</code></pre>
+        `;
+    }
+    
+    // Quote
+    if (blockType === 'quote') {
+        return `
+            <blockquote style="
+                margin: 0.5rem 0;
+                padding: 0.75rem;
+                border-left: 3px solid var(--pf-v5-global--BorderColor--300);
+                background-color: var(--pf-v5-global--BackgroundColor--150);
+                font-style: italic;
+            ">${escapeHtml(block.content || '')}</blockquote>
+        `;
+    }
+    
+    // Fallback for unknown block types - just render content
+    return `<div style="margin: 0.5rem 0;">${escapeHtml(block.content || '')}</div>`;
+}
+
+/**
+ * Render a nested block WITH its errors displayed inline
+ * This is used for blocks nested in list items (after + continuation markers)
+ * so each block's content is followed immediately by its errors
+ */
+function renderNestedBlockWithErrors(block) {
+    // Render the block content
+    const blockContent = renderNestedBlock(block);
+    
+    // Render errors for this specific block (if any)
+    const blockErrors = block.errors || [];
+    const errorsHtml = blockErrors.length > 0 ? `
+        <div class="pf-v5-l-stack pf-m-gutter pf-v5-u-ml-lg pf-v5-u-mt-sm">
+            ${blockErrors.map(error => createInlineError(error)).join('')}
+        </div>
+    ` : '';
+    
+    // Return content + errors
+    return blockContent + errorsHtml;
 }
 
 /**
@@ -570,6 +781,8 @@ function generatePatternFlyTable(rows, hasHeader = false) {
         html += '<thead>';
         html += '<tr role="row">';
         for (const cell of rows[0]) {
+            // Header cells: escape HTML since they're simple text
+            const cellContent = typeof cell === 'string' && cell.includes('<') ? cell : renderSafeTableCellHtml(cell);
             html += `<th class="pf-v5-c-table__th" role="columnheader" scope="col" style="
                 background: linear-gradient(135deg, var(--pf-v5-global--palette--blue-100) 0%, var(--pf-v5-global--palette--blue-200) 100%);
                 font-weight: var(--pf-v5-global--FontWeight--bold);
@@ -577,7 +790,7 @@ function generatePatternFlyTable(rows, hasHeader = false) {
                 border-bottom: 2px solid var(--pf-v5-global--palette--blue-300);
                 padding: var(--pf-v5-global--spacer--md);
                 text-align: left;
-            ">${renderSafeTableCellHtml(cell)}</th>`;
+            ">${cellContent}</th>`;
         }
         html += '</tr>';
         html += '</thead>';
@@ -596,12 +809,15 @@ function generatePatternFlyTable(rows, hasHeader = false) {
            onmouseout="this.style.backgroundColor='${isEvenRow ? 'var(--pf-v5-global--BackgroundColor--100)' : 'var(--pf-v5-global--BackgroundColor--200)'}'"
         >`;
         for (const cell of row) {
+            // **FIX**: If cell contains HTML tags (from renderCellContent), use it directly
+            // Otherwise, escape it for safety
+            const cellContent = typeof cell === 'string' && cell.includes('<') ? cell : renderSafeTableCellHtml(cell);
             html += `<td class="pf-v5-c-table__td" role="gridcell" style="
                 padding: var(--pf-v5-global--spacer--md);
                 border-bottom: 1px solid var(--pf-v5-global--BorderColor--100);
                 vertical-align: top;
                 line-height: 1.5;
-            ">${renderSafeTableCellHtml(cell)}</td>`;
+            ">${cellContent}</td>`;
         }
         html += '</tr>';
     }
@@ -888,6 +1104,32 @@ function generateBlockRewriteButton(block, displayIndex, priority) {
                     onclick="rewriteBlock('block-${displayIndex}', '${block.block_type}')" 
                     data-block-id="block-${displayIndex}"
                     data-block-type="${block.block_type}">
+                ${buttonText}
+            </button>
+        </div>
+    `;
+}
+
+/**
+ * Generate rewrite button for table blocks (with nested error count)
+ */
+function generateTableRewriteButton(displayIndex, errorCount, priority) {
+    if (errorCount === 0) {
+        return '';
+    }
+    
+    const buttonText = priority === 'red' 
+        ? `🚨 Fix ${errorCount} Critical Issue${errorCount > 1 ? 's' : ''}`
+        : `🤖 Improve ${errorCount} Issue${errorCount > 1 ? 's' : ''}`;
+    
+    const buttonClass = priority === 'red' ? 'pf-m-danger' : 'pf-m-primary';
+    
+    return `
+        <div class="pf-v5-u-mt-md">
+            <button class="pf-v5-c-button ${buttonClass} block-rewrite-button" 
+                    onclick="rewriteBlock('block-${displayIndex}', 'table')" 
+                    data-block-id="block-${displayIndex}"
+                    data-block-type="table">
                 ${buttonText}
             </button>
         </div>

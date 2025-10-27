@@ -43,6 +43,10 @@ class CompanyNamesRule(BaseLegalRule):
         3. Apply evidence-based analysis with surgical guards
         4. Generate context-aware legal guidance
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         
         if not text.strip():

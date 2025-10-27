@@ -27,6 +27,10 @@ class AWordsRule(BaseWordUsageRule):
         Computes a nuanced evidence score per occurrence considering linguistic,
         structural, semantic, and feedback clues.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -275,6 +279,12 @@ class AWordsRule(BaseWordUsageRule):
         content_type = context.get('content_type', 'general')
         audience = context.get('audience', 'general')
         word_lower = word.lower()
+        
+        # === SEMANTIC CLUE: Technical/Formal Context ===
+        # Drastically reduce evidence for formal/technical documentation
+        # where descriptive verbs like 'allow' and 'appear' are standard.
+        if content_type in {'api', 'technical', 'reference', 'legal', 'academic', 'procedure', 'procedural'}:
+            ev -= 0.95  # Maximum penalty to ensure complete suppression in technical contexts 
         
         # Content type adjustments
         if content_type == 'tutorial':

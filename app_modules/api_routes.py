@@ -26,6 +26,10 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
     @app.before_request
     def log_request_info():
         """Log all incoming requests and ensure database session exists."""
+        # Skip logging and session creation for health check endpoints
+        if request.path in ['/health', '/health/detailed']:
+            return
+        
         print(f"\n📥 INCOMING REQUEST: {request.method} {request.path}")
         if request.method == 'POST':
             print(f"   📋 Content-Type: {request.content_type}")
@@ -74,70 +78,83 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                 return f"<h1>Application Error</h1><p>Failed to load analyze content page: {e}</p><p>Template error: {e2}</p>", 500
     
     @app.route('/upload', methods=['POST'])
+    @app.limiter.limit("10 per minute")  # Limit file uploads
     def upload_file():
-        """Handle file upload and text extraction with database storage."""
+        """Handle file upload and text extraction."""
         try:
+            logger.info(f"🔍 [ROUTE-DEBUG] /upload endpoint called")
+            logger.info(f"🔍 [ROUTE-DEBUG] request.files keys: {list(request.files.keys())}")
+            
             if 'file' not in request.files:
+                logger.error(f"❌ [ROUTE-DEBUG] No 'file' in request.files")
                 return jsonify({'error': 'No file selected'}), 400
             
             file = request.files['file']
+            logger.info(f"🔍 [ROUTE-DEBUG] File object: {file}")
+            logger.info(f"🔍 [ROUTE-DEBUG] File filename: {file.filename}")
+            
             if file.filename == '' or file.filename is None:
+                logger.error(f"❌ [ROUTE-DEBUG] Empty filename")
                 return jsonify({'error': 'No file selected'}), 400
             
             if file and document_processor.allowed_file(file.filename):
                 filename = secure_filename(file.filename)
+                logger.info(f"✅ [ROUTE-DEBUG] Secure filename: {filename}")
+                
+                # Detect format from file extension
+                detected_format = document_processor.detect_format_from_filename(filename)
+                logger.info(f"✅ [ROUTE-DEBUG] Detected format: {detected_format}")
+                
+                # Get file size (seek to end, get position, seek back to start)
+                file.seek(0, os.SEEK_END)
+                file_size = file.tell()
+                file.seek(0)  # Reset to beginning for extraction
+                logger.info(f"🔍 [ROUTE-DEBUG] File size: {file_size} bytes")
                 
                 # Extract text without saving to disk (more secure)
+                logger.info(f"🔍 [ROUTE-DEBUG] Starting text extraction...")
                 content = document_processor.extract_text_from_upload(file)
                 
                 if content:
+                    logger.info(f"✅ [ROUTE-DEBUG] Content extracted successfully: {len(content)} chars")
+                    
+                    # Get file extension
+                    file_ext = filename.split('.')[-1].lower() if '.' in filename else 'unknown'
+                    
                     result = {
                         'success': True,
                         'content': content,
-                        'filename': filename
+                        'filename': filename,
+                        'file_size': file_size,
+                        'file_extension': file_ext,
+                        'detected_format': detected_format,
+                        'word_count': len(content.split()),
+                        'char_count': len(content),
+                        'message': 'File uploaded successfully. Please select content type and click Analyze.'
                     }
                     
-                    # Store in database if available
-                    if database_service:
-                        try:
-                            db_session_id = session.get('db_session_id')
-                            if db_session_id:
-                                # Detect document format from filename
-                                doc_format = filename.split('.')[-1].lower() if '.' in filename else 'txt'
-                                
-                                document_id, analysis_id = database_service.process_document_upload(
-                                    session_id=db_session_id,
-                                    content=content,
-                                    filename=filename,
-                                    document_format=doc_format,
-                                    content_type='unknown',  # Will be determined during analysis
-                                    file_size=len(content.encode('utf-8'))
-                                )
-                                
-                                result.update({
-                                    'document_id': document_id,
-                                    'analysis_id': analysis_id,
-                                    'db_session_id': db_session_id
-                                })
-                                
-                                logger.info(f"📄 Document stored in database: {document_id}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to store document in database: {e}")
-                            # Continue without database storage
+                    logger.info(f"📤 [ROUTE-DEBUG] Upload successful: {filename} ({file_size} bytes, format: {detected_format})")
+                    logger.info(f"🔍 [ROUTE-DEBUG] Returning result with keys: {list(result.keys())}")
                     
                     return jsonify(result)
                 else:
+                    logger.error(f"❌ [ROUTE-DEBUG] Content extraction returned None/empty")
                     return jsonify({'error': 'Failed to extract text from file'}), 400
             else:
+                logger.error(f"❌ [ROUTE-DEBUG] File type not allowed: {file.filename}")
                 return jsonify({'error': 'File type not supported'}), 400
                 
         except RequestEntityTooLarge:
-            return jsonify({'error': 'File too large'}), 413
+            logger.error(f"❌ [ROUTE-DEBUG] File too large")
+            return jsonify({'error': 'File too large. Maximum size is 16MB.'}), 413
         except Exception as e:
-            logger.error(f"Upload error: {str(e)}")
+            logger.error(f"❌ [ROUTE-DEBUG] Upload error: {str(e)}")
+            import traceback
+            logger.error(f"❌ [ROUTE-DEBUG] Traceback: {traceback.format_exc()}")
             return jsonify({'error': f'Upload failed: {str(e)}'}), 500
     
     @app.route('/analyze', methods=['POST'])
+    @app.limiter.limit("5 per minute")  # Strict limit for heavy analysis endpoint
     def analyze_content():
         """Analyze text content for style issues with confidence data and real-time progress."""
         start_time = time.time()  # Track processing time
@@ -161,7 +178,7 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                 return jsonify({'error': 'No content provided'}), 400
             
             # Validate content_type
-            valid_content_types = ['concept', 'procedure', 'reference']
+            valid_content_types = ['concept', 'procedure', 'reference', 'assembly']
             if content_type not in valid_content_types:
                 return jsonify({'error': f'Invalid content_type. Must be one of: {valid_content_types}'}), 400
                 
@@ -192,25 +209,50 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                     logger.warning(f"⚠️ Failed to update analysis status: {e}")
             
             # Start analysis with progress updates
-            logger.info(f"Starting analysis for session {session_id} with content_type={content_type} and confidence_threshold={confidence_threshold}")
+            logger.info(f"🔍 [ANALYZE-DEBUG] Starting analysis for session {session_id}")
+            logger.info(f"🔍 [ANALYZE-DEBUG] content_type={content_type}")
+            logger.info(f"🔍 [ANALYZE-DEBUG] format_hint={format_hint}")
+            logger.info(f"🔍 [ANALYZE-DEBUG] confidence_threshold={confidence_threshold}")
+            logger.info(f"🔍 [ANALYZE-DEBUG] Content length: {len(content)} chars")
+            logger.info(f"🔍 [ANALYZE-DEBUG] Content preview (first 300 chars): {content[:300]}")
+            
             emit_progress(session_id, 'analysis_start', 'Initializing analysis...', 'Setting up analysis pipeline', 10)
             
             # Enhanced: Configure analyzer with confidence threshold if provided
             if confidence_threshold is not None:
+                logger.info(f"🔍 [ANALYZE-DEBUG] Setting confidence threshold to {confidence_threshold}")
                 # Temporarily adjust the confidence threshold for this request
                 original_threshold = style_analyzer.structural_analyzer.confidence_threshold
                 style_analyzer.structural_analyzer.confidence_threshold = confidence_threshold
                 style_analyzer.structural_analyzer.rules_registry.set_confidence_threshold(confidence_threshold)
             
             # Analyze with structural blocks AND modular compliance
-            emit_progress(session_id, 'style_analysis', 'Running style analysis...', 'Checking grammar and style rules', 40)
+            logger.info(f"🔍 [ANALYZE-DEBUG] Calling analyze_with_blocks...")
+            logger.info(f"🔍 [ANALYZE-DEBUG] Parameters: format_hint='{format_hint}', content_type='{content_type}'")
+            
+            emit_progress(session_id, 'structural_parsing', 'Parsing document structure...', 'Extracting content blocks and hierarchy', 25)
+            
             analysis_result = style_analyzer.analyze_with_blocks(content, format_hint, content_type=content_type)
+            
+            emit_progress(session_id, 'style_analysis', 'Style analysis complete', 'Processed all grammar and style rules', 60)
+            
+            logger.info(f"✅ [ANALYZE-DEBUG] analyze_with_blocks completed")
+            logger.info(f"🔍 [ANALYZE-DEBUG] Result keys: {list(analysis_result.keys())}")
+            
             analysis = analysis_result.get('analysis', {})
             structural_blocks = analysis_result.get('structural_blocks', [])
             
+            logger.info(f"🔍 [ANALYZE-DEBUG] Extracted {len(structural_blocks)} structural blocks")
+            if structural_blocks:
+                logger.info(f"🔍 [ANALYZE-DEBUG] First 3 block types: {[b.get('block_type') for b in structural_blocks[:3]]}")
+            else:
+                logger.warning(f"⚠️ [ANALYZE-DEBUG] No structural blocks found!")
+            
+            # Emit compliance check progress (always emit, regardless of result)
+            emit_progress(session_id, 'compliance_check', 'Validating compliance', f'Checking {content_type} module requirements', 70)
+            
             # Check if modular compliance was included in results
             if 'modular_compliance' in analysis_result:
-                emit_progress(session_id, 'compliance_check', 'Modular compliance analyzed', f'Validated {content_type} module requirements', 70)
                 analysis['modular_compliance'] = analysis_result['modular_compliance']
             
             # Enhanced: Restore original threshold if it was modified
@@ -225,8 +267,11 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                 from metadata_assistant import MetadataAssistant
                 
                 # Initialize metadata assistant with progress callback
+                # REMAP metadata progress from 0-100% to 85-95% range
                 def metadata_progress_callback(session_id, stage, message, details, progress):
-                    emit_progress(session_id, stage, message, details, progress)
+                    # Remap internal progress (0-100) to overall progress (85-95)
+                    remapped_progress = 85 + (progress / 100) * 10  # 0→85, 100→95
+                    emit_progress(session_id, stage, message, details, int(remapped_progress))
                 
                 # Import and create ModelManager directly
                 from models import ModelManager
@@ -237,7 +282,7 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                     progress_callback=metadata_progress_callback
                 )
                 
-                emit_progress(session_id, 'metadata_generation', 'Generating metadata...', 'Extracting title, keywords, and classification', 85)
+                # Don't emit here - metadata assistant will emit starting at 85% via callback
                 
                 # Get spaCy document from analysis if available
                 spacy_doc = None
@@ -259,19 +304,19 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                 )
                 
                 if metadata_result and metadata_result.get('success'):
-                    emit_progress(session_id, 'metadata_complete', 'Metadata generated successfully!', 
-                                f'Generated in {metadata_result.get("processing_time", 0):.2f}s', 95)
+                    # Don't emit here - metadata assistant already emitted 100% (remapped to 95%)
+                    pass
                 else:
                     logger.warning("Metadata generation failed or returned no results")
+                    # If metadata failed, manually set to 95% to continue
+                    emit_progress(session_id, 'metadata_skipped', 'Metadata skipped', 'Continuing without metadata', 95)
                 
             except Exception as e:
                 logger.warning(f"Metadata generation failed: {e}")
                 # Continue without metadata - graceful degradation
                 metadata_result = None
 
-            emit_progress(session_id, 'analysis_complete', 'Analysis complete!', f'Analysis completed successfully', 100)
-            
-            # Calculate processing time
+            # Calculate processing time (moved before emit to include accurate time)
             processing_time = time.time() - start_time
             analysis['processing_time'] = processing_time
             analysis['content_type'] = content_type  # Include content type in results
@@ -368,6 +413,9 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                 
             # Enhanced: Add backward compatibility flag
             response_data['backward_compatible'] = True
+            
+            # Emit progress completion AFTER response is fully prepared (moved from line 308)
+            emit_progress(session_id, 'analysis_complete', 'Analysis complete!', f'Analysis completed in {processing_time:.2f}s', 100)
             
             emit_completion(session_id, True, response_data)
             
@@ -471,20 +519,6 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                 print(f"   ⚠️  No errors provided - returning original content")
             
             logger.info(f"Starting block rewrite for session {session_id}, block {block_id}, type: {block_type}")
-            
-            # FIRST: Get applicable stations and emit them to UI
-            applicable_stations = []
-            if hasattr(ai_rewriter, 'ai_rewriter') and hasattr(ai_rewriter.ai_rewriter, 'assembly_line'):
-                applicable_stations = ai_rewriter.ai_rewriter.assembly_line.get_applicable_stations(block_errors)
-            elif hasattr(ai_rewriter, 'assembly_line'):
-                applicable_stations = ai_rewriter.assembly_line.get_applicable_stations(block_errors)
-            
-            print(f"   🏭 Applicable stations: {applicable_stations}")
-            
-            # Emit block processing start with all stations upfront
-            from .websocket_handlers import emit_block_processing_start
-            emit_block_processing_start(session_id, block_id, block_type, applicable_stations)
-            print(f"   📡 Emitted all stations to UI upfront: {applicable_stations}")
             
             # Emit progress start via WebSocket
             print(f"   📡 Emitting initial progress update...")
@@ -594,18 +628,18 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
             logger.error(f"Refinement error: {str(e)}")
             return jsonify({'error': f'Refinement failed: {str(e)}'}), 500
     
-    @app.route('/create-blogs')
-    def create_blogs():
-        """Blog creation page with form-driven UI."""
+    @app.route('/create-content')
+    def create_content():
+        """Content creation page with form-driven UI."""
         try:
-            return render_template('create_blogs.html')
+            return render_template('create_content.html')
         except Exception as e:
-            logger.error(f"Error rendering create blogs page: {e}")
+            logger.error(f"Error rendering content creation page: {e}")
             try:
-                return render_template('error.html', error_message="Failed to load blog creation page"), 500
+                return render_template('error.html', error_message="Failed to load content creation page"), 500
             except Exception as e2:
                 logger.error(f"Error rendering error page: {e2}")
-                return f"<h1>Application Error</h1><p>Failed to load blog creation page: {e}</p><p>Template error: {e2}</p>", 500
+                return f"<h1>Application Error</h1><p>Failed to load content creation page: {e}</p><p>Template error: {e2}</p>", 500
     
     @app.route('/api/feedback', methods=['POST'])
     def submit_feedback():
@@ -631,9 +665,47 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
             ip_address = request.remote_addr
             db_session_id = session.get('db_session_id')
             
-            # PostgreSQL storage
+            # Database storage with file-based fallback
             if not database_service:
-                return jsonify({'error': 'Database service unavailable'}), 503
+                # Fallback to file-based storage (for production without database)
+                logger.warning("Database service unavailable - using file-based feedback storage")
+                
+                from app_modules.feedback_storage import FeedbackStorage
+                # Use environment variable for storage path, fallback to PVC mount point
+                feedback_storage_dir = os.environ.get('FEEDBACK_STORAGE_DIR', '/opt/app-root/src/feedback_data')
+                file_storage = FeedbackStorage(storage_dir=feedback_storage_dir)
+                
+                success, message, feedback_id = file_storage.store_feedback(
+                    feedback_data={
+                        'session_id': data.get('session_id', 'unknown'),
+                        'error_id': violation_id,
+                        'error_type': data['error_type'],
+                        'error_message': data['error_message'],
+                        'error_text': data.get('error_text', ''),
+                        'context_before': data.get('context_before'),
+                        'context_after': data.get('context_after'),
+                        'feedback_type': data['feedback_type'],
+                        'confidence_score': data.get('confidence_score', 0.5),
+                        'user_reason': data.get('user_reason')
+                    },
+                    user_agent=user_agent,
+                    ip_address=ip_address
+                )
+                
+                if success:
+                    response_data = {
+                        'success': True,
+                        'message': 'Feedback stored to file (database unavailable)',
+                        'feedback_id': feedback_id,
+                        'violation_id': violation_id,
+                        'timestamp': datetime.now().isoformat(),
+                        'storage_type': 'file_fallback'
+                    }
+                    logger.info(f"📁 File-based feedback stored: {feedback_id}")
+                    return jsonify(response_data), 201
+                else:
+                    logger.error(f"❌ File-based feedback storage failed: {message}")
+                    return jsonify({'error': f'Feedback storage failed: {message}'}), 500
                 
             # Ensure we have a database session ID
             if not db_session_id:
@@ -809,8 +881,16 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
             return jsonify({'error': f'Failed to retrieve model usage: {str(e)}'}), 500
     
     @app.route('/health')
+    @app.limiter.exempt  # Exempt from rate limiting to prevent pod restarts
     def health_check():
-        """Health check endpoint with database status."""
+        """Simple health check endpoint for Kubernetes/OpenShift probes."""
+        # Simple check - just return OK if the app is running
+        return jsonify({'status': 'ok'}), 200
+    
+    @app.route('/health/detailed')
+    @app.limiter.exempt  # Exempt from rate limiting
+    def health_check_detailed():
+        """Detailed health check endpoint with database status."""
         try:
             health_status = {
                 'status': 'healthy',
@@ -842,6 +922,57 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
                 'error': str(e),
                 'timestamp': datetime.now().isoformat()
             }), 500
+    
+    @app.route('/health/nltk-diagnostic')
+    @app.limiter.exempt  # Exempt from rate limiting
+    def nltk_diagnostic():
+        """Diagnostic endpoint to test NLTK and textstat configuration."""
+        import nltk
+        import textstat
+        
+        results = {
+            'nltk_data_paths': nltk.data.path[:3],  # Show first 3 paths
+            'nltk_data_env': os.getenv('NLTK_DATA', 'NOT_SET'),
+            'tests': {}
+        }
+        
+        # Test 1: Check if NLTK data resources exist
+        test_resources = ['punkt', 'stopwords', 'cmudict']
+        for resource in test_resources:
+            try:
+                if resource == 'punkt':
+                    nltk.data.find('tokenizers/punkt')
+                else:
+                    nltk.data.find(f'corpora/{resource}')
+                results['tests'][f'nltk_{resource}'] = '✅ Found'
+            except LookupError as e:
+                results['tests'][f'nltk_{resource}'] = f'❌ Missing: {str(e)[:100]}'
+        
+        # Test 2: Test textstat on sample text
+        sample_text = "This is a simple test sentence. It should produce valid readability scores."
+        try:
+            flesch = textstat.flesch_reading_ease(sample_text)
+            results['tests']['textstat_flesch'] = f'✅ {flesch:.1f}'
+        except Exception as e:
+            results['tests']['textstat_flesch'] = f'❌ Error: {str(e)[:200]}'
+        
+        try:
+            smog = textstat.smog_index(sample_text)
+            results['tests']['textstat_smog'] = f'✅ {smog:.1f}'
+        except Exception as e:
+            results['tests']['textstat_smog'] = f'❌ Error: {str(e)[:200]}'
+        
+        try:
+            grade = textstat.flesch_kincaid_grade(sample_text)
+            results['tests']['textstat_grade'] = f'✅ {grade:.1f}'
+        except Exception as e:
+            results['tests']['textstat_grade'] = f'❌ Error: {str(e)[:200]}'
+        
+        # Overall status
+        all_passed = all('✅' in str(v) for v in results['tests'].values())
+        results['status'] = 'PASS' if all_passed else 'FAIL'
+        
+        return jsonify(results), 200 if all_passed else 500
     
     @app.route('/api/feedback/existing', methods=['GET'])
     def get_existing_feedback():
@@ -897,11 +1028,16 @@ def setup_routes(app, document_processor, style_analyzer, ai_rewriter, database_
             # Convert feedback to dict format
             feedback_data = []
             for feedback in feedback_list:
+                violation = feedback.violation if hasattr(feedback, 'violation') else None
+                
                 feedback_data.append({
                     'feedback_id': feedback.feedback_id,
                     'violation_id': feedback.violation_id,
                     'error_type': feedback.error_type,
                     'error_message': feedback.error_message,
+                    'error_text': violation.error_text if violation else '',
+                    'context_before': violation.context_before if violation else None,
+                    'context_after': violation.context_after if violation else None,
                     'feedback_type': feedback.feedback_type.value,
                     'confidence_score': feedback.confidence_score,
                     'user_reason': feedback.user_reason,

@@ -1,0 +1,599 @@
+# Articles Configuration
+# Manages thresholds, weights, patterns, and lists for articles rule
+# Used by ArticlesRule for detecting incorrect and missing articles
+
+# Evidence thresholds
+evidence_thresholds:
+  min_threshold: 0.1
+  incorrect_base: 0.8
+  missing_base: 0.6
+  incorrect_high: 0.8
+  incorrect_medium: 0.5
+  missing_high: 0.8
+  missing_medium: 0.5
+  missing_low: 0.3
+
+# Common words with known pronunciation
+common_words_vowel_sound:
+  - 'hour'
+  - 'honest'
+  - 'honor'
+  - 'heir'
+  - 'herb'
+  - 'api'
+  - 'fbi'
+  - 'html'
+  - 'sql'
+  - 'xml'
+
+common_words_consonant_sound:
+  - 'user'
+  - 'unique'
+  - 'university'
+  - 'unix'
+  - 'ubuntu'
+  - 'url'
+  - 'utility'
+  - 'one'
+  - 'once'
+  - 'european'
+
+# Linguistic weights - Incorrect article
+incorrect_linguistic_weights:
+  common_word_boost: 0.1
+  abbreviation_boost: 0.1
+  proper_noun_reduction: 0.1
+  foreign_reduction: 0.2
+  subject_position_boost: 0.1
+  object_position_boost: 0.05
+
+# Linguistic weights - Missing article
+missing_linguistic_weights:
+  subject_boost: 0.2
+  direct_object_boost: 0.1
+  prep_object_boost: 0.05
+  modified_prep_object_reduction: 0.7
+  compound_reduction: 0.3
+  uncountable_reduction: 0.4
+  technical_compound_reduction: 0.3
+  technical_coordination_reduction: 0.2
+  specific_reference_boost: 0.2
+  generic_reference_boost: 0.1
+  mass_noun_context_reduction: 0.2
+  inline_list_reduction: 0.5
+  formal_abstract_reduction: 0.4
+
+# Structural weights - Incorrect article
+incorrect_structural_weights:
+  heading_boost: 0.2
+  paragraph_boost: 0.1
+  code_block_reduction: 0.3
+  inline_code_reduction: 0.2
+  list_reduction: 0.1
+  table_reduction: 0.2
+  important_admonition_boost: 0.1
+
+# Structural weights - Missing article
+missing_structural_weights:
+  procedural_list_imperative_reduction: 0.8
+  heading_reduction: 0.2
+  paragraph_boost: 0.1
+  code_block_reduction: 0.4
+  inline_code_reduction: 0.3
+  complete_sentence_list_boost: 0.3
+  fragment_list_reduction: 0.3
+  nested_list_reduction: 0.1
+  table_reduction: 0.4
+  admonition_reduction: 0.2
+
+# Semantic weights - Incorrect article
+incorrect_semantic_weights:
+  technical_reduction: 0.1
+  academic_boost: 0.2
+  legal_boost: 0.3
+  marketing_reduction: 0.2
+  api_reduction: 0.1
+  academic_audience_boost: 0.1
+  technical_audience_reduction: 0.05
+  beginner_audience_boost: 0.1
+  high_formality_boost: 0.1
+  low_formality_reduction: 0.1
+  formality_high_threshold: 5
+  formality_low_threshold: 2
+
+# Semantic weights - Missing article
+missing_semantic_weights:
+  procedural_modified_pobj_reduction: 0.2
+  technical_reduction: 0.2
+  api_reduction: 0.3
+  procedural_reduction: 0.2
+  academic_boost: 0.2
+  legal_boost: 0.1
+  marketing_reduction: 0.1
+  technical_domain_reduction: 0.2
+  documentation_domain_reduction: 0.1
+  technical_audience_reduction: 0.2
+  professional_audience_boost: 0.1
+  general_audience_boost: 0.2
+  procedural_docs_reduction: 0.3
+  reference_docs_reduction: 0.2
+  high_technical_density_reduction: 0.2
+
+# Feedback weights
+feedback_weights:
+  word_correction_boost: 0.2
+  word_accepted_reduction: 0.1
+  common_correction_boost: 0.3
+  no_article_accepted_reduction: 0.3
+  missing_article_boost: 0.3
+  context_acceptable_reduction: 0.2
+  context_needs_boost: 0.2
+
+# Mass noun modifiers
+mass_noun_modifiers:
+  - 'data'
+  - 'network'
+  - 'system'
+  - 'application'
+  - 'service'
+  - 'database'
+  - 'server'
+  - 'client'
+  - 'user'
+  - 'admin'
+  - 'security'
+  - 'performance'
+  - 'quality'
+  - 'real-time'
+
+# Adverbial nouns (by + noun phrases)
+adverbial_nouns:
+  - 'default'
+  - 'design'
+  - 'definition'
+  - 'nature'
+  - 'accident'
+  - 'chance'
+  - 'mistake'
+  - 'necessity'
+  - 'comparison'
+  - 'contrast'
+
+# Admonition keywords
+admonition_keywords:
+  - 'note'
+  - 'tip'
+  - 'important'
+  - 'warning'
+  - 'caution'
+
+# Truly uncountable technical terms
+truly_uncountable_technical_terms:
+  - 'text'
+  - 'bold'
+  - 'italic'
+  - 'deployment'
+  - 'configuration'
+  - 'processing'
+  - 'handling'
+  - 'formatting'
+  - 'styling'
+  - 'parsing'
+  - 'validation'
+  - 'authentication'
+  - 'authorization'
+  - 'encryption'
+  - 'compression'
+  - 'optimization'
+  - 'integration'
+  - 'implementation'
+  - 'documentation'
+  - 'testing'
+  - 'debugging'
+  - 'monitoring'
+  - 'logging'
+  - 'caching'
+  - 'indexing'
+  - 'rendering'
+  - 'compilation'
+  - 'execution'
+  - 'initialization'
+  - 'installation'
+  - 'backup'
+  - 'recovery'
+  - 'migration'
+  - 'synchronization'
+  - 'serialization'
+  - 'deserialization'
+
+# Uncountable technical compounds
+uncountable_compounds:
+  - 'disk space'
+  - 'error handling'
+  - 'data processing'
+  - 'user authentication'
+  - 'system performance'
+  - 'network traffic'
+  - 'load balancing'
+
+# Countable context verbs
+countable_context_verbs:
+  - 'provide'
+  - 'offers'
+  - 'include'
+  - 'contain'
+  - 'add'
+  - 'give'
+  - 'deliver'
+  - 'present'
+  - 'introduce'
+  - 'create'
+  - 'generate'
+
+# Technical modifiers
+technical_modifiers:
+  - 'attribute'
+  - 'parameter'
+  - 'configuration'
+  - 'system'
+  - 'data'
+  - 'file'
+  - 'database'
+  - 'network'
+  - 'security'
+  - 'user'
+  - 'admin'
+  - 'server'
+  - 'client'
+  - 'application'
+  - 'service'
+  - 'component'
+  - 'module'
+  - 'library'
+  - 'framework'
+  - 'algorithm'
+  - 'protocol'
+  - 'interface'
+  - 'api'
+  - 'endpoint'
+  - 'resource'
+  - 'metadata'
+  - 'schema'
+  - 'template'
+  - 'pattern'
+  - 'model'
+  - 'structure'
+  - 'format'
+  - 'syntax'
+  - 'semantic'
+  - 'logical'
+  - 'physical'
+  - 'virtual'
+  - 'dynamic'
+  - 'static'
+  - 'automatic'
+  - 'manual'
+  - 'custom'
+  - 'default'
+  - 'basic'
+  - 'advanced'
+  - 'complex'
+  - 'simple'
+  - 'standard'
+  - 'extended'
+
+# Formal verbs (take abstract nouns without articles)
+formal_verbs:
+  - 'constitute'
+  - 'constitutes'
+  - 'constituting'
+  - 'constituted'
+  - 'introduce'
+  - 'introduces'
+  - 'introducing'
+  - 'introduced'
+  - 'require'
+  - 'requires'
+  - 'requiring'
+  - 'required'
+  - 'involve'
+  - 'involves'
+  - 'involving'
+  - 'involved'
+  - 'represent'
+  - 'represents'
+  - 'representing'
+  - 'represented'
+  - 'establish'
+  - 'establishes'
+  - 'establishing'
+  - 'established'
+  - 'demonstrate'
+  - 'demonstrates'
+  - 'demonstrating'
+  - 'demonstrated'
+  - 'ensure'
+  - 'ensures'
+  - 'ensuring'
+  - 'ensured'
+  - 'provide'
+  - 'provides'
+  - 'providing'
+  - 'provided'
+  - 'maintain'
+  - 'maintains'
+  - 'maintaining'
+  - 'maintained'
+  - 'achieve'
+  - 'achieves'
+  - 'achieving'
+  - 'achieved'
+  - 'facilitate'
+  - 'facilitates'
+  - 'facilitating'
+  - 'facilitated'
+
+# Abstract nouns (used without articles in formal contexts)
+abstract_nouns:
+  - 'failure'
+  - 'agreement'
+  - 'risk'
+  - 'access'
+  - 'compliance'
+  - 'success'
+  - 'progress'
+  - 'development'
+  - 'improvement'
+  - 'enhancement'
+  - 'security'
+  - 'stability'
+  - 'reliability'
+  - 'availability'
+  - 'performance'
+  - 'control'
+  - 'management'
+  - 'oversight'
+  - 'governance'
+  - 'supervision'
+  - 'consistency'
+  - 'compatibility'
+  - 'integration'
+  - 'implementation'
+  - 'deployment'
+  - 'validation'
+  - 'verification'
+  - 'authentication'
+  - 'authorization'
+  - 'approval'
+  - 'transparency'
+  - 'accountability'
+  - 'responsibility'
+  - 'liability'
+  - 'coverage'
+  - 'efficiency'
+  - 'effectiveness'
+  - 'productivity'
+  - 'scalability'
+  - 'flexibility'
+  - 'maintainability'
+  - 'sustainability'
+  - 'viability'
+  - 'functionality'
+  - 'capability'
+
+# Abstract technical nouns (preposition + noun idioms)
+abstract_tech_nouns:
+  - 'host'
+  - 'access'
+  - 'support'
+  - 'contention'
+  - 'usage'
+  - 'traffic'
+
+# Technical value keywords
+technical_keywords:
+  - 'auto'
+  - 'default'
+  - 'manual'
+  - 'none'
+  - 'null'
+  - 'true'
+  - 'false'
+  - 'yes'
+  - 'no'
+  - 'on'
+  - 'off'
+  - 'enabled'
+  - 'disabled'
+  - 'active'
+  - 'inactive'
+  - 'required'
+  - 'optional'
+  - 'primary'
+  - 'secondary'
+  - 'public'
+  - 'private'
+  - 'static'
+  - 'dynamic'
+  - 'fixed'
+  - 'variable'
+  - 'constant'
+  - 'custom'
+
+# Value-setting patterns
+value_setting_patterns:
+  - 'set to'
+  - 'set as'
+  - 'equal to'
+  - 'equals'
+  - 'is'
+  - 'be'
+  - 'was'
+  - 'were'
+  - 'become'
+  - 'becomes'
+  - 'default to'
+  - 'defaults to'
+  - 'switch to'
+  - 'change to'
+
+# Copula verbs
+copula_verbs:
+  - 'be'
+  - 'become'
+  - 'remain'
+  - 'stay'
+
+# Comparison lemmas
+comparison_lemmas:
+  - 'like'
+  - 'such'
+  - 'similar'
+
+# Demonstratives
+demonstratives:
+  - 'this'
+  - 'that'
+  - 'these'
+  - 'those'
+
+# Ordinal words
+ordinal_words:
+  - 'first'
+  - 'second'
+  - 'third'
+  - 'last'
+
+# Formal indicators
+formal_indicators:
+  - 'furthermore'
+  - 'moreover'
+  - 'consequently'
+  - 'therefore'
+  - 'nonetheless'
+  - 'nevertheless'
+  - 'additionally'
+  - 'specifically'
+  - 'particularly'
+  - 'respectively'
+  - 'accordingly'
+  - 'subsequently'
+  - 'aforementioned'
+
+# Inline list patterns (regex)
+inline_list_patterns:
+  - '^-\s+'           # "- Configuration"
+  - '^\*\s+'          # "* Database"
+  - '^\d+\.\s+'       # "1. User", "2. Admin"
+  - '^\d+\)\s+'       # "1) Setup", "2) Config"
+  - '^[a-zA-Z]\.\s+'  # "a. First", "A. Primary"
+  - '^[a-zA-Z]\)\s+'  # "a) Setup", "b) Config"
+  - '^[ivxlcdm]+\.\s+' # "i. First", "ii. Second"
+  - '^[IVXLCDM]+\.\s+' # "I. Primary", "II. Secondary"
+
+# Inline list detection thresholds
+inline_list_thresholds:
+  max_words_between: 2
+  max_lookahead: 5
+
+# Technical value detection
+technical_value_detection:
+  lookback_limit: 4
+  markup_chars:
+    open: ['`', '``', '(', '[', '{']
+    close: ['`', '``', ')', ']', '}']
+
+# POS tags
+pos_tags:
+  proper_noun: 'PROPN'
+  noun: 'NOUN'
+  pronoun: 'PRON'
+  verb: 'VERB'
+  auxiliary: 'AUX'
+  punctuation: 'PUNCT'
+  superlative:
+    - 'JJS'
+    - 'RBS'
+  finite_verbs:
+    - 'VBZ'
+    - 'VBP'
+    - 'VBD'
+    - 'VBN'
+  imperative: 'VB'
+  gerund: 'VBG'
+
+# Dependency tags
+dependency_tags:
+  determiner: 'det'
+  possessive: 'poss'
+  compound: 'compound'
+  subject: 'nsubj'
+  passive_subject: 'nsubjpass'
+  direct_object: 'dobj'
+  prep_object: 'pobj'
+  attribute: 'attr'
+  noun_modifier: 'nmod'
+  adjectival_modifier: 'amod'
+  coordination: 'conj'
+  coordinating_conjunction: 'cc'
+  auxiliary_passive: 'auxpass'
+  attribute_complement: 'acomp'
+  marker: 'mark'
+
+# Entity types
+entity_types:
+  foreign:
+    - 'LANGUAGE'
+    - 'NORP'
+
+# Admonition types
+admonition_types:
+  important:
+    - 'IMPORTANT'
+    - 'WARNING'
+    - 'CAUTION'
+
+# Block types
+block_types:
+  inline_list_containers:
+    - 'paragraph'
+    - 'section'
+    - 'admonition'
+  code:
+    - 'code_block'
+    - 'literal_block'
+  lists:
+    - 'ordered_list_item'
+    - 'unordered_list_item'
+    - 'olist'
+    - 'list_item'
+  tables:
+    - 'table_cell'
+    - 'table_header'
+  headings:
+    - 'heading'
+    - 'title'
+
+# Content types
+content_types:
+  procedural:
+    - 'procedural'
+    - 'procedure'
+    - 'tutorial'
+    - 'howto'
+    - 'guide'
+    - 'instructions'
+  formal:
+    - 'academic'
+    - 'legal'
+    - 'professional'
+  technical:
+    - 'technical'
+    - 'api'
+  domains_abbreviated:
+    - 'software'
+    - 'engineering'
+    - 'devops'
+    - 'documentation'
+    - 'tutorial'
+

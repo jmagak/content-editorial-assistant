@@ -79,6 +79,8 @@ class DocumentProcessor:
             doc = fitz.open(filepath)
             text = ""
             
+            logger.info(f"🔍 [PDF-DEBUG] Extracting from PDF with {doc.page_count} pages")
+            
             for page_num in range(doc.page_count):
                 page = doc[page_num]
                 try:
@@ -90,6 +92,9 @@ class DocumentProcessor:
                 text += "\n\n"  # Add page break
             
             doc.close()
+            
+            logger.info(f"🔍 [PDF-DEBUG] Extracted {len(text)} chars from PDF")
+            
             return text.strip()
             
         except Exception as e:
@@ -102,6 +107,8 @@ class DocumentProcessor:
             doc = Document(filepath)
             text = ""
             
+            logger.info(f"🔍 [DOCX-DEBUG] Extracting from DOCX with {len(doc.paragraphs)} paragraphs and {len(doc.tables)} tables")
+            
             for paragraph in doc.paragraphs:
                 text += paragraph.text + "\n"
             
@@ -112,6 +119,8 @@ class DocumentProcessor:
                         text += cell.text + " "
                     text += "\n"
             
+            logger.info(f"🔍 [DOCX-DEBUG] Extracted {len(text)} chars from DOCX")
+            
             return text.strip()
             
         except Exception as e:
@@ -119,57 +128,41 @@ class DocumentProcessor:
             return None
     
     def _extract_from_markdown(self, filepath: str) -> Optional[str]:
-        """Extract text from Markdown file."""
+        """
+        Extract text from Markdown file.
+        CRITICAL: Preserves original Markdown markup for proper structural parsing.
+        The Markdown parser (markdown/parser.py) will handle parsing and structure extraction.
+        """
         try:
             with open(filepath, 'r', encoding='utf-8') as file:
                 md_content = file.read()
             
-            # Convert markdown to HTML, then extract text
-            html = markdown.markdown(md_content)
-            soup = BeautifulSoup(html, 'html.parser')
-            text = soup.get_text()
+            logger.info(f"🔍 [MARKDOWN-DEBUG] Extracted raw Markdown content: {len(md_content)} chars")
+            logger.info(f"🔍 [MARKDOWN-DEBUG] First 300 chars: {md_content[:300]}")
             
-            return text.strip()
+            # Return the content as-is, preserving all Markdown markup
+            # This allows the structural parser to properly parse headings, lists, code blocks, etc.
+            return md_content.strip()
             
         except Exception as e:
             logger.error(f"Error extracting from Markdown: {str(e)}")
             return None
     
     def _extract_from_asciidoc(self, filepath: str) -> Optional[str]:
-        """Extract text from AsciiDoc file."""
+        """
+        Extract text from AsciiDoc file.
+        CRITICAL: Preserves original AsciiDoc markup for proper structural parsing.
+        The AsciiDoc parser (asciidoc/parser.py) will handle parsing and structure extraction.
+        """
         try:
             with open(filepath, 'r', encoding='utf-8') as file:
                 content = file.read()
             
-            # Remove AsciiDoc formatting (basic implementation)
-            # Convert headers to text (preserve content, remove =+ markers)
-            content = re.sub(r'^=+\s+(.*?)$', r'\1', content, flags=re.MULTILINE)
+            logger.info(f"🔍 [ASCIIDOC-DEBUG] Extracted raw AsciiDoc content: {len(content)} chars")
+            logger.info(f"🔍 [ASCIIDOC-DEBUG] First 300 chars: {content[:300]}")
             
-            # Remove attribute entries (lines starting with :attribute:)
-            content = re.sub(r'^:[\w-]+:\s*.*?$', '', content, flags=re.MULTILINE)
-            
-            # Remove block delimiters but preserve content inside
-            content = re.sub(r'^----+$', '', content, flags=re.MULTILINE)
-            content = re.sub(r'^\*\*\*\*+$', '', content, flags=re.MULTILINE)
-            content = re.sub(r'^====+$', '', content, flags=re.MULTILINE)
-            content = re.sub(r'^\+\+\+\++$', '', content, flags=re.MULTILINE)
-            
-            # Remove admonition markers but preserve content
-            content = re.sub(r'^\[(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]$', '', content, flags=re.MULTILINE)
-            
-            # Remove inline formatting
-            content = re.sub(r'\*([^*]+)\*', r'\1', content)  # bold
-            content = re.sub(r'_([^_]+)_', r'\1', content)    # italic
-            content = re.sub(r'`([^`]+)`', r'\1', content)    # monospace
-            
-            # Remove links but keep text
-            content = re.sub(r'link:([^[]+)\[([^\]]*)\]', r'\2', content)
-            content = re.sub(r'http[s]?://[^\s\[\]]+', '', content)
-            
-            # Clean up extra whitespace
-            content = re.sub(r'\n\s*\n', '\n\n', content)
-            content = re.sub(r'\n{3,}', '\n\n', content)
-            
+            # Return the content as-is, preserving all AsciiDoc markup
+            # This allows the structural parser to properly parse sections, tables, admonitions, etc.
             return content.strip()
             
         except Exception as e:
@@ -181,7 +174,11 @@ class DocumentProcessor:
         return self._extract_from_xml(filepath)  # Use common XML extraction logic
     
     def _extract_from_xml(self, filepath: str) -> Optional[str]:
-        """Extract text from XML file (including DITA)."""
+        """
+        Extract text from XML file (including DITA).
+        CRITICAL: Preserves original XML/DITA markup for proper structural parsing.
+        The DITA parser (dita/parser.py) will handle parsing and structure extraction.
+        """
         try:
             with open(filepath, 'r', encoding='utf-8') as file:
                 content = file.read()
@@ -190,12 +187,15 @@ class DocumentProcessor:
             is_dita = self._is_dita_content(content)
             
             if is_dita:
-                return self._extract_from_dita_content(content)
+                logger.info(f"🔍 [DITA-DEBUG] Extracted raw DITA content: {len(content)} chars")
+                logger.info(f"🔍 [DITA-DEBUG] First 300 chars: {content[:300]}")
             else:
-                # Generic XML extraction
-                soup = BeautifulSoup(content, 'xml')
-                text = soup.get_text(separator='\n')
-                return text.strip()
+                logger.info(f"🔍 [XML-DEBUG] Extracted raw XML content: {len(content)} chars")
+                logger.info(f"🔍 [XML-DEBUG] First 300 chars: {content[:300]}")
+            
+            # Return the content as-is, preserving all XML/DITA markup
+            # This allows the structural parser to properly parse topics, sections, elements, etc.
+            return content.strip()
             
         except Exception as e:
             logger.error(f"Error extracting from XML/DITA: {str(e)}")
@@ -223,56 +223,13 @@ class DocumentProcessor:
         
         return False
     
-    def _extract_from_dita_content(self, content: str) -> Optional[str]:
-        """Enhanced extraction specifically for DITA content."""
-        try:
-            soup = BeautifulSoup(content, 'xml')
-            
-            # Remove metadata and prolog sections
-            for element in soup(['prolog', 'metadata', 'critdates', 'permissions']):
-                element.decompose()
-            
-            # Extract text with better structure preservation
-            text_parts = []
-            
-            # Get title
-            title = soup.find('title')
-            if title:
-                text_parts.append(title.get_text().strip())
-                text_parts.append('')  # Blank line after title
-            
-            # Get shortdesc
-            shortdesc = soup.find('shortdesc')
-            if shortdesc:
-                text_parts.append(shortdesc.get_text().strip())
-                text_parts.append('')
-            
-            # Get main content body
-            body_tags = ['conbody', 'taskbody', 'refbody', 'troublebody']
-            for body_tag in body_tags:
-                body = soup.find(body_tag)
-                if body:
-                    # Process sections within body
-                    for elem in body.find_all(['p', 'section', 'example', 'prereq', 'context', 'steps', 'result']):
-                        elem_text = elem.get_text().strip()
-                        if elem_text:
-                            text_parts.append(elem_text)
-                            text_parts.append('')  # Paragraph separation
-                    break
-            
-            return '\\n'.join(text_parts).strip()
-            
-        except Exception as e:
-            logger.error(f"Error extracting DITA content: {str(e)}")
-            # Fallback to basic extraction
-            soup = BeautifulSoup(content, 'xml')
-            return soup.get_text(separator='\\n').strip()
-    
     def _extract_from_text(self, filepath: str) -> Optional[str]:
         """Extract text from plain text file."""
         try:
             with open(filepath, 'r', encoding='utf-8') as file:
                 content = file.read()
+            
+            logger.info(f"🔍 [TEXT-DEBUG] Extracted plain text content: {len(content)} chars")
             
             return content.strip()
             
@@ -281,22 +238,127 @@ class DocumentProcessor:
             return None
     
     def _clean_text(self, text: str) -> str:
-        """Clean and normalize extracted text."""
+        """
+        Clean and normalize extracted text.
+        NOTE: For structured formats (AsciiDoc, Markdown, DITA), minimal cleaning is applied
+        to preserve formatting that structural parsers need.
+        """
         if text is None:
             return ""
         if not text:
             return ""
         
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Remove excessive line breaks
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-        
-        # Trim whitespace
+        # Only trim leading/trailing whitespace
+        # Do NOT collapse internal whitespace or newlines - structural parsers need them!
         text = text.strip()
         
         return text
+    
+    def extract_text_from_upload(self, file_storage) -> Optional[str]:
+        """
+        Extract text from an uploaded file (werkzeug FileStorage object).
+        This method processes the file without saving it to disk.
+        
+        Args:
+            file_storage: werkzeug FileStorage object from request.files
+            
+        Returns:
+            Extracted text or None if extraction fails
+        """
+        try:
+            import tempfile
+            
+            # Get file extension from filename
+            filename = file_storage.filename
+            logger.info(f"🔍 [UPLOAD-DEBUG] Starting extraction for file: {filename}")
+            
+            if not filename or '.' not in filename:
+                logger.error("❌ [UPLOAD-DEBUG] Invalid filename or no extension")
+                return None
+            
+            file_ext = os.path.splitext(filename)[1].lower()
+            logger.info(f"🔍 [UPLOAD-DEBUG] Detected file extension: {file_ext}")
+            
+            if file_ext not in self.supported_formats:
+                logger.error(f"❌ [UPLOAD-DEBUG] Unsupported file format: {file_ext}")
+                logger.error(f"❌ [UPLOAD-DEBUG] Supported formats: {list(self.supported_formats.keys())}")
+                return None
+            
+            # Create temporary file for processing
+            with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+                file_storage.save(tmp_path)
+                logger.info(f"🔍 [UPLOAD-DEBUG] Saved to temporary file: {tmp_path}")
+            
+            try:
+                # Extract text using the appropriate method
+                logger.info(f"🔍 [UPLOAD-DEBUG] Calling extraction method for {file_ext}")
+                text = self.supported_formats[file_ext](tmp_path)
+                
+                if text is not None:
+                    logger.info(f"✅ [UPLOAD-DEBUG] Raw extraction successful: {len(text)} characters")
+                    logger.info(f"🔍 [UPLOAD-DEBUG] First 200 chars of extracted text: {text[:200]}")
+                    
+                    # Clean and normalize the text
+                    text = self._clean_text(text)
+                    logger.info(f"✅ [UPLOAD-DEBUG] After cleaning: {len(text)} characters")
+                    logger.info(f"🔍 [UPLOAD-DEBUG] First 200 chars after cleaning: {text[:200]}")
+                    
+                    return text
+                else:
+                    logger.error(f"❌ [UPLOAD-DEBUG] Extraction method returned None for {filename}")
+                    return None
+            
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(tmp_path)
+                    logger.info(f"🔍 [UPLOAD-DEBUG] Cleaned up temporary file")
+                except Exception as e:
+                    logger.warning(f"⚠️ [UPLOAD-DEBUG] Failed to delete temporary file: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ [UPLOAD-DEBUG] Error extracting text from upload: {str(e)}")
+            import traceback
+            logger.error(f"❌ [UPLOAD-DEBUG] Traceback: {traceback.format_exc()}")
+            return None
+    
+    def detect_format_from_filename(self, filename: str) -> str:
+        """
+        Detect document format from filename.
+        
+        Args:
+            filename: Name of the file
+            
+        Returns:
+            Format string compatible with parser_factory ('asciidoc', 'markdown', 'dita', 'plaintext', 'auto')
+        """
+        logger.info(f"🔍 [FORMAT-DEBUG] Detecting format for filename: {filename}")
+        
+        if not filename or '.' not in filename:
+            logger.warning(f"⚠️ [FORMAT-DEBUG] No extension found, returning 'auto'")
+            return 'auto'
+        
+        file_ext = os.path.splitext(filename)[1].lower()
+        logger.info(f"🔍 [FORMAT-DEBUG] File extension: {file_ext}")
+        
+        # Map file extensions to parser format hints
+        format_mapping = {
+            '.adoc': 'asciidoc',
+            '.asciidoc': 'asciidoc',
+            '.md': 'markdown',
+            '.markdown': 'markdown',
+            '.dita': 'dita',
+            '.xml': 'dita',  # Assume XML is DITA unless content says otherwise
+            '.txt': 'plaintext',
+            '.pdf': 'auto',  # PDF requires content analysis
+            '.docx': 'auto'  # DOCX requires content analysis
+        }
+        
+        detected_format = format_mapping.get(file_ext, 'auto')
+        logger.info(f"✅ [FORMAT-DEBUG] Mapped {file_ext} → {detected_format}")
+        
+        return detected_format
     
     def get_document_info(self, filepath: str) -> Dict[str, Any]:
         """

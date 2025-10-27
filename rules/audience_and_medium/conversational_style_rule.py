@@ -37,9 +37,18 @@ class ConversationalStyleRule(BaseAudienceRule):
         word choices with a nuanced evidence score based on linguistic,
         structural, semantic, and feedback clues.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
+
+        # === SURGICAL ZERO FALSE POSITIVE GUARD ===
+        # CRITICAL: Code blocks are exempt from prose style rules
+        if context and context.get('block_type') in ['code_block', 'literal_block', 'inline_code']:
+            return []
 
         doc = nlp(text)
 
@@ -165,16 +174,12 @@ class ConversationalStyleRule(BaseAudienceRule):
         audience = (context or {}).get('audience', 'general')
 
         # Encourage conversational tone more in marketing, tutorials, UI copy
-        if content_type in {'marketing', 'tutorial', 'procedural'}:
+        if content_type in {'marketing', 'tutorial'}:
             evidence += 0.1
-        if content_type in {'api', 'technical'}:
-            # Technical content for experts should be more permissive
-            if audience in {'expert', 'developer'}:
-                evidence -= 0.2  # Much more permissive for technical experts
-            else:
-                evidence += 0.05  # still beneficial for general technical content
-        if content_type in {'legal', 'academic'}:
-            evidence -= 0.6  # PRODUCTION FIX: formal tone is fully appropriate in legal/academic contexts
+        
+        # Technical, procedural, and formal documentation should use precise terminology
+        if content_type in {'api', 'technical', 'legal', 'academic', 'reference', 'procedure', 'procedural'}:
+            evidence -= 0.95  # Maximum penalty - procedures are technical documentation
 
         if audience in {'beginner', 'general', 'user'}:
             evidence += 0.05

@@ -52,15 +52,13 @@ class LightweightPassiveAnalyzer:
         # Look for passive voice patterns in the sentence
         for token in doc:
             # Pattern 1: Auxiliary passive (is/was + past participle)
+            # The token marked as 'auxpass' has its head pointing to the main verb (past participle)
             if token.dep_ == 'auxpass':
-                # Find the past participle
-                main_verb = None
-                for child in token.head.children:
-                    if child.tag_ == 'VBN':
-                        main_verb = child
-                        break
+                # The head of auxpass IS the main verb (past participle)
+                main_verb = token.head
                 
-                if main_verb:
+                # Verify it's actually a past participle
+                if main_verb and main_verb.tag_ == 'VBN':
                     # Create unique identifier for this construction
                     construction_id = (main_verb.idx, token.idx, main_verb.lemma_, token.lemma_)
                     if construction_id not in seen_constructions:
@@ -69,8 +67,9 @@ class LightweightPassiveAnalyzer:
                             constructions.append(construction)
                             seen_constructions.add(construction_id)
             
-            # Pattern 2: "be" + past participle (broader detection)
+            # Pattern 2: "be" + past participle as direct child (for cases Pattern 1 misses)
             elif (token.lemma_ == 'be' and 
+                  token.dep_ != 'auxpass' and  # Avoid duplicates with Pattern 1
                   any(child.tag_ == 'VBN' for child in token.children)):
                 
                 for child in token.children:
@@ -82,30 +81,18 @@ class LightweightPassiveAnalyzer:
                             if construction:
                                 constructions.append(construction)
                                 seen_constructions.add(construction_id)
-            
-            # Pattern 3: Direct past participle with auxiliary (like "This is clicked")
-            elif token.tag_ == 'VBN':
-                # Look for auxiliary in the sentence
-                auxiliary = None
-                for t in doc:
-                    if (t.lemma_ in ['be', 'get', 'become'] and 
-                        t.head == token or token.head == t):
-                        auxiliary = t
-                        break
-                
-                if auxiliary:
-                    # Create unique identifier for this construction
-                    construction_id = (token.idx, auxiliary.idx, token.lemma_, auxiliary.lemma_)
-                    if construction_id not in seen_constructions:
-                        construction = self._create_construction(auxiliary, token, doc)
-                        if construction:
-                            constructions.append(construction)
-                            seen_constructions.add(construction_id)
         
         return constructions
     
     def _create_construction(self, auxiliary, main_verb, doc):
-        """Create a PassiveConstruction object."""
+        """Create a PassiveConstruction object with accurate span and subject detection."""
+        # Find the passive subject (nsubjpass)
+        passive_subject = None
+        for child in main_verb.children:
+            if child.dep_ == 'nsubjpass':
+                passive_subject = child
+                break
+        
         # Check for by-phrase
         has_by_phrase = any(
             child.lemma_ == 'by' and child.dep_ == 'agent'
@@ -120,16 +107,26 @@ class LightweightPassiveAnalyzer:
         # Determine context type
         context_type = self._determine_context_type(doc.text)
         
+        # Create proper span covering auxiliary + main verb
+        span_start = min(auxiliary.idx, main_verb.idx)
+        span_end = max(auxiliary.idx + len(auxiliary.text), main_verb.idx + len(main_verb.text))
+        
+        # Create flagged text in proper order (auxiliary verb + main verb)
+        if auxiliary.idx < main_verb.idx:
+            flagged_text = doc.text[auxiliary.idx:main_verb.idx + len(main_verb.text)]
+        else:
+            flagged_text = doc.text[main_verb.idx:auxiliary.idx + len(auxiliary.text)]
+        
         return PassiveConstruction(
             main_verb=main_verb,
             auxiliary=auxiliary,
-            passive_subject=None,
+            passive_subject=passive_subject,
             has_by_phrase=has_by_phrase,
             has_clear_actor=has_clear_actor,
             context_type=context_type,
-            span_start=main_verb.idx,
-            span_end=main_verb.idx + len(main_verb.text),
-            flagged_text=main_verb.text,
+            span_start=span_start,
+            span_end=span_end,
+            flagged_text=flagged_text.strip(),
             construction_type="passive"
         )
     
@@ -204,6 +201,12 @@ class MissingActorDetector(AmbiguityDetector):
             # Parse the sentence
             doc = nlp(context.sentence)
             
+            # CRITICAL FIX: Skip imperative sentences with passive in subordinate clauses
+            # E.g., "Skip this step if X is set to Y" - the imperative "Skip" is clear, 
+            # passive "is set" in the conditional clause is perfectly acceptable
+            if self._is_imperative_with_conditional_passive(doc):
+                return detections
+            
             # Use self-contained analyzer to find passive constructions
             passive_constructions = self.passive_analyzer.find_passive_constructions(doc)
             
@@ -219,6 +222,38 @@ class MissingActorDetector(AmbiguityDetector):
             print(f"Error in missing actor detection: {e}")
         
         return detections
+    
+    def _is_imperative_with_conditional_passive(self, doc) -> bool:
+        """
+        Check if sentence is an imperative with passive voice in a subordinate clause.
+        E.g., "Skip this step if X is set to Y" - perfectly clear, no ambiguity.
+        
+        Returns:
+            True if this is an imperative sentence with conditional passive (skip detection)
+        """
+        # Find root verb
+        root = None
+        for token in doc:
+            if token.dep_ == 'ROOT':
+                root = token
+                break
+        
+        if not root:
+            return False
+        
+        # Check if root is imperative (VB tag at root position)
+        if root.tag_ != 'VB':
+            return False
+        
+        # Check if there's a subordinate clause with passive voice
+        for token in doc:
+            # Look for subordinate clause markers (if, when, while, etc.)
+            if token.dep_ in ['mark', 'advcl'] and token.lemma_ in ['if', 'when', 'while', 'unless']:
+                # This is a conditional/subordinate clause
+                # Passive voice in these clauses is acceptable when main clause is imperative
+                return True
+        
+        return False
     
     def _is_missing_actor(self, construction: PassiveConstruction, doc, context: AmbiguityContext) -> bool:
         """
@@ -324,10 +359,11 @@ class MissingActorDetector(AmbiguityDetector):
         # EVIDENCE FACTOR 4: Context Type Specificity (Domain Knowledge)
         context_type_modifier = 0.0
         if construction.context_type == ContextType.INSTRUCTIONAL:
-            context_type_modifier += 0.18  # Strong evidence - instructions need clear actors
+            context_type_modifier += 0.25  # Instructional passive voice is a significant issue.
         elif construction.context_type == ContextType.DESCRIPTIVE:
-            context_type_modifier -= 0.05  # Weak evidence - descriptions more forgiving
-        
+
+            # This is a key convention in technical writing and should rarely be flagged.
+            context_type_modifier -= 0.50  # Was -0.40. Increased penalty to be more decisive. 
         # EVIDENCE FACTOR 5: Implicit Actor Analysis (Contextual Clues)
         implicit_actor_modifier = 0.0
         if self._has_implicit_actor_clues(doc, context):
@@ -410,12 +446,15 @@ class MissingActorDetector(AmbiguityDetector):
     def _create_detection(self, construction: PassiveConstruction, doc, context: AmbiguityContext) -> Optional[AmbiguityDetection]:
         """Create ambiguity detection for missing actor using shared construction data."""
         try:
-            # Extract evidence using shared construction data
-            tokens = [construction.main_verb.text]
+            # Extract evidence tokens in proper grammatical order: auxiliary + main_verb
+            # This creates readable phrases like "is set" not "set is"
+            tokens = []
             if construction.auxiliary:
                 tokens.append(construction.auxiliary.text)
-            if construction.passive_subject:
-                tokens.append(construction.passive_subject.text)
+            tokens.append(construction.main_verb.text)
+            
+            # Note: We don't include passive_subject in the error message as it's not part of the issue
+            # The issue is the passive construction itself, not what's being acted upon
             
             linguistic_pattern = f"missing_actor_{construction.construction_type}"
             

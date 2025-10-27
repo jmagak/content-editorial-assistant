@@ -37,6 +37,28 @@ class InterModuleAnalysisRule(BaseRule):
     def _get_rule_type(self) -> str:
         """Return the rule type for BaseRule compatibility."""
         return "inter_module_analysis"
+    
+    def _detect_content_type_from_metadata(self, text: str) -> Optional[str]:
+        """
+        Detect content type from document metadata attributes.
+        
+        Looks for:
+        - :_mod-docs-content-type: PROCEDURE|CONCEPT|REFERENCE
+        - :_content-type: (deprecated but still supported)
+        
+        Returns lowercase type or None if not found.
+        """
+        # Check for new-style attribute
+        new_style = re.search(r':_mod-docs-content-type:\s*(PROCEDURE|CONCEPT|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if new_style:
+            return new_style.group(1).lower()
+        
+        # Check for old-style attribute (deprecated but still supported)
+        old_style = re.search(r':_content-type:\s*(PROCEDURE|CONCEPT|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if old_style:
+            return old_style.group(1).lower()
+        
+        return None
         
     def _load_config(self):
         """Load inter-module analysis configuration."""
@@ -71,7 +93,7 @@ class InterModuleAnalysisRule(BaseRule):
             except Exception:
                 pass  # Use defaults
     
-    def analyze(self, text: str, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    def analyze(self, text: str, sentences: List[str] = None, nlp=None, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Analyze inter-module relationships and suggest improvements.
         
@@ -82,11 +104,20 @@ class InterModuleAnalysisRule(BaseRule):
         Returns:
             List of inter-module relationship issues and suggestions
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         if not text or not text.strip():
             return []
         
         errors = []
         context = context or {}
+        
+        # Detect content type from metadata if not provided in context
+        detected_type = self._detect_content_type_from_metadata(text)
+        if detected_type:
+            context['content_type'] = detected_type
         
         try:
             # Parse document structure
@@ -182,7 +213,12 @@ class InterModuleAnalysisRule(BaseRule):
         return errors
     
     def _check_missing_relationships(self, text: str, xrefs: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check for missing relationships between related modules."""
+        """
+        Check for missing relationships between related modules.
+        
+        Per Red Hat guidelines, these are suggestions only - linking to concept modules
+        is recommended but NOT required, especially if the procedure has adequate introduction.
+        """
         errors = []
         
         if not self.config['detect_missing_connections']:
@@ -190,6 +226,14 @@ class InterModuleAnalysisRule(BaseRule):
         
         module_type = context.get('content_type', 'concept')
         title = self._extract_title(text)
+        
+        # For procedures: Only suggest concept links if there's minimal introduction
+        if module_type == 'procedure':
+            # Check if document has adequate introduction
+            intro_text = self._extract_introduction(text)
+            if len(intro_text.split()) > 40:  # Has decent intro (>40 words)
+                # Document provides sufficient context - no need to suggest concept links
+                return errors
         
         # Analyze content to suggest related modules
         suggested_modules = self._suggest_related_modules(text, title, module_type)
@@ -346,6 +390,34 @@ class InterModuleAnalysisRule(BaseRule):
         title_match = re.match(r'^= (.+)$', text.split('\n')[0] if text.split('\n') else '')
         return title_match.group(1).strip() if title_match else 'Unknown'
     
+    def _extract_introduction(self, text: str) -> str:
+        """
+        Extract introduction text (content between title and first heading).
+        
+        Returns the introductory paragraph(s) that appear after the title
+        but before the first section heading (. or ==).
+        """
+        lines = text.split('\n')
+        intro_lines = []
+        found_title = False
+        
+        for line in lines:
+            # Find the title line
+            if not found_title:
+                if re.match(r'^=\s+', line):
+                    found_title = True
+                continue
+            
+            # Stop at first heading (discrete or section)
+            if re.match(r'^[.=]+\s+', line):
+                break
+            
+            # Collect introduction lines
+            if line.strip():
+                intro_lines.append(line)
+        
+        return ' '.join(intro_lines)
+    
     def _has_procedural_content(self, text: str) -> bool:
         """Check if text contains procedural content patterns."""
         patterns = [
@@ -367,12 +439,35 @@ class InterModuleAnalysisRule(BaseRule):
         return any(re.search(pattern, text, re.IGNORECASE) for pattern in concept_patterns)
     
     def _needs_conceptual_context(self, text: str) -> bool:
-        """Check if procedure needs conceptual background."""
-        # Simple heuristic: if procedure is complex or mentions unfamiliar concepts
+        """
+        Check if procedure needs conceptual background.
+        
+        Only returns True if the procedure is complex AND lacks adequate introduction.
+        """
+        # Check if document already has a good introduction
+        # Extract content before first heading
+        lines = text.split('\n')
+        intro_text = []
+        found_title = False
+        for line in lines:
+            if re.match(r'^=\s+', line):  # Title
+                found_title = True
+                continue
+            if found_title:
+                if re.match(r'^[.=]+\s+', line):  # Next heading
+                    break
+                intro_text.append(line)
+        
+        intro = ' '.join(intro_text).strip()
+        
+        # If introduction is substantial (>50 words), assume context is adequate
+        if len(intro.split()) > 50:
+            return False
+        
+        # Otherwise, check if procedure is complex
         complex_indicators = [
-            r'\b(?:architecture|components?|concepts?)\b',
-            r'(?:advanced|complex|enterprise)',
-            len(re.findall(r'^\s*\d+\.\s+', text, re.MULTILINE)) > 10  # Many steps
+            r'\b(?:architecture|deployment|enterprise)\b',  # Removed "components", "concepts" as too common
+            len(re.findall(r'^\s*\d+\.\s+', text, re.MULTILINE)) > 15  # MANY steps (raised from 10)
         ]
         
         return any(re.search(indicator, text, re.IGNORECASE) if isinstance(indicator, str) else indicator 

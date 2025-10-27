@@ -49,6 +49,10 @@ class ListPunctuationRule(BaseStructureRule):
         - Inappropriate periods for list item types
         - Context-aware validation for list structure
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         context = context or {}
         
@@ -251,6 +255,16 @@ class ListPunctuationRule(BaseStructureRule):
     
     def _calculate_list_item_punctuation_evidence(self, text: str, item_classification: str, context: Dict[str, Any], doc: Optional['Doc'] = None) -> float:
         """Calculate evidence for list item punctuation violations."""
+        
+        # === ZERO-FALSE-POSITIVE GUARD FOR PREREQUISITES LISTS ===
+        preceding_heading = context.get('preceding_heading', '').lower()
+        prerequisite_keywords = ['prerequisites', 'requirements', 'before you begin', 'before you start', 'what you need']
+        
+        if any(keyword in preceding_heading for keyword in prerequisite_keywords):
+            # Prerequisites lists correctly use periods, regardless of classification
+            if text.rstrip().endswith('.'):
+                return 0.0 
+        
         # === SURGICAL ZERO FALSE POSITIVE GUARDS ===
         if self._apply_zero_false_positive_guards_structure({'text': text, 'sentence': text}, context):
             return 0.0
@@ -259,8 +273,15 @@ class ListPunctuationRule(BaseStructureRule):
         if context.get('content_type') in ['creative', 'literary', 'poetry']:
             return 0.0
         
+        # === CRITICAL FIX: Colons are valid terminal punctuation ===
+        # When a list item ends with a colon, it's introducing subsequent content
+        # (code blocks, nested lists, etc.) - this is grammatically correct
+        text_stripped = text.rstrip()
+        if text_stripped.endswith(':'):
+            return 0.0  # Colon is valid terminal punctuation, no error
+        
         # === STEP 1: BASE EVIDENCE ASSESSMENT ===
-        has_period = text.rstrip().endswith('.')
+        has_period = text_stripped.endswith('.')
         evidence_score = 0.0
         
         if item_classification == 'sentence':
@@ -322,7 +343,13 @@ class ListPunctuationRule(BaseStructureRule):
     
     def _calculate_fallback_punctuation_evidence(self, text: str, item_type: str, context: Dict[str, Any]) -> float:
         """Calculate evidence for fallback analysis without spaCy."""
-        has_period = text.rstrip().endswith('.')
+        text_stripped = text.rstrip()
+        
+        # === CRITICAL FIX: Colons are valid terminal punctuation ===
+        if text_stripped.endswith(':'):
+            return 0.0  # Colon is valid, no error
+        
+        has_period = text_stripped.endswith('.')
         word_count = len(text.strip().split())
         
         # Simple evidence calculation

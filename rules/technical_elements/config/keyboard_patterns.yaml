@@ -238,3 +238,48 @@ guard_patterns:
     - "insert into"
     - "end of"
     - "space between"
+  
+  # Character vs. Key Context Detection
+  # These terms indicate we're talking about characters/punctuation, not keyboard keys
+  # Used to prevent false positives like "spaces or semicolons" (characters) vs "Space key" (keyboard)
+  character_context_terms:
+    punctuation_nouns:
+      - semicolon
+      - semicolons
+      - comma
+      - commas
+      - period
+      - periods
+      - quote
+      - quotes
+      - dash
+      - dashes
+      - hyphen
+      - hyphens
+      - colon
+      - colons
+      - apostrophe
+      - apostrophes
+      - slash
+      - slashes
+      - backslash
+      - backslashes
+      - parenthesis
+      - parentheses
+      - bracket
+      - brackets
+      - brace
+      - braces
+      - asterisk
+      - asterisks
+      - ampersand
+      - ampersands
+    
+    # Terms that can refer to either character or key (context-dependent)
+    ambiguous_terms:
+      - space
+      - spaces
+      - tab
+      - tabs
+      - newline
+      - newlines

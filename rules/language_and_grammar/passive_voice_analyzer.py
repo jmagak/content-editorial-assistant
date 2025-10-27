@@ -110,7 +110,11 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
             # Configuration and data entities  
             'parameter', 'variable', 'property', 'attribute', 'setting', 'option',
             'configuration', 'config', 'field', 'value', 'flag', 'switch',
-            'policy', 'rule', 'constraint', 'limit', 'threshold', 'timeout'
+            'policy', 'rule', 'constraint', 'limit', 'threshold', 'timeout',
+            # Hardware and networking entities
+            'queue', 'cpu', 'core', 'nic', 'controller', 'packet', 'device', 
+            'driver', 'channel', 'port', 'socket', 'thread', 'process', 'memory',
+            'cache', 'buffer', 'register', 'interrupt', 'node', 'host', 'machine'
         }
         
         self.characteristic_verbs = {
@@ -152,6 +156,12 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
             elif (token.lemma_ in {'be', 'is', 'are', 'was', 'were', 'being', 'been'} 
                   and token.pos_ in ['AUX', 'VERB']):
                 construction = self._analyze_pattern_passive(token, doc)
+                if construction and self._is_true_passive_voice(construction, doc):
+                    constructions.append(construction)
+            
+            # === Method 3: Modal Passive Detection ===
+            elif token.tag_ == 'MD':  # MD is the tag for modal verbs (can, will, must, etc.)
+                construction = self._analyze_modal_passive(token, doc)
                 if construction and self._is_true_passive_voice(construction, doc):
                     constructions.append(construction)
         
@@ -216,12 +226,63 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
         
         return None
     
+    def _analyze_modal_passive(self, modal_token: Token, doc: Doc) -> Optional[PassiveConstruction]:
+        """
+        Analyze modal passive construction (e.g., 'can be done', 'must be configured').
+        
+        Modal passive pattern: MODAL + be + PAST_PARTICIPLE
+        Examples: "can be done", "must be configured", "should be reviewed"
+        
+        Args:
+            modal_token: The modal verb token (can, will, must, should, etc.)
+            doc: The spaCy document
+            
+        Returns:
+            PassiveConstruction if modal passive detected, None otherwise
+        """
+        try:
+            # A modal passive requires 'be' (base form) to follow the modal,
+            # and then a past participle (VBN tag).
+            if modal_token.i < len(doc) - 2:
+                next_token = doc[modal_token.i + 1]
+                verb_token = doc[modal_token.i + 2]
+
+                if next_token.lemma_ == 'be' and verb_token.tag_ == 'VBN':
+                    passive_subject = self._find_passive_subject(verb_token, doc)
+                    
+                    # If no direct subject, the head of the modal is often the main verb,
+                    # and its subject is the overall subject.
+                    if not passive_subject and modal_token.head.dep_ == 'ROOT':
+                        for child in modal_token.head.children:
+                            if child.dep_ == 'nsubj':
+                                passive_subject = child
+                                break
+                    
+                    return PassiveConstruction(
+                        main_verb=verb_token,
+                        auxiliary=next_token,  # 'be' is the auxiliary
+                        passive_subject=passive_subject,
+                        construction_type=PassiveVoiceType.MODAL_PASSIVE,
+                        all_tokens=[modal_token, next_token, verb_token] + ([passive_subject] if passive_subject else []),
+                        span_start=modal_token.idx,
+                        span_end=verb_token.idx + len(verb_token.text),
+                        flagged_text=f"{modal_token.text} {next_token.text} {verb_token.text}"
+                    )
+        except Exception:
+            pass
+        
+        return None
+    
     def _is_true_passive_voice(self, construction: PassiveConstruction, doc: Doc) -> bool:
         """
         Sophisticated validation to distinguish true passive voice from
         predicate adjective constructions that spaCy mislabels.
         """
         main_verb = construction.main_verb
+        
+        # ZERO FALSE POSITIVE GUARD 8: Imperative Mood (Commands)
+        if self._is_imperative_mood(main_verb, doc):
+            return False  # Imperative sentences are active voice, not passive
         
         # Must be past participle (VBN) to be passive
         if main_verb.tag_ != 'VBN':
@@ -574,6 +635,75 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
     # This approach maintains pure linguistic analysis while handling
     # complex patterns that exceed simple dependency parsing.
     
+    def _is_imperative_mood(self, verb: Token, doc: Doc) -> bool:
+        """
+        Detect if a verb is in imperative mood (command form).
+        
+        Imperative characteristics:
+        - Base form verb (VB tag)
+        - At or near sentence start
+        - No explicit subject (implied "you")
+        - Not part of a passive construction
+        
+        Examples:
+        - "Run the command" ← Imperative (active voice)
+        - "Update the configuration" ← Imperative (active voice)
+        - "Be configured correctly" ← Imperative with "be", but check for passive
+        """
+        # Check 1: Must be base form verb (VB)
+        if verb.tag_ != 'VB':
+            return False
+        
+        # Check 2: Must be at or near sentence start (within first 3 tokens, allowing discourse markers)
+        # This allows for patterns like "Note: Run the command"
+        if verb.i > 3:
+            return False
+        
+        # Check if verb is sentence-initial or follows only minor elements
+        preceding_tokens = doc[:verb.i]
+        significant_tokens = [t for t in preceding_tokens if t.pos_ not in ['PUNCT', 'DET', 'INTJ', 'ADV'] and not t.is_space]
+        
+        # If there are significant tokens before the verb, it's likely not imperative
+        if len(significant_tokens) > 1:
+            return False
+        
+        # Check 3: Must not have explicit subject before it
+        for token in preceding_tokens:
+            if token.dep_ in ['nsubj', 'nsubjpass']:
+                return False  # Has explicit subject, not imperative
+        
+        # Check 4: Check if this verb is part of infinitive phrase (not imperative)
+        # Infinitives: "to run", "to update"
+        for child in verb.children:
+            if child.dep_ == 'aux' and child.lemma_ == 'to':
+                return False  # Infinitive, not imperative
+        
+        # Check if verb is ROOT or has imperative-like structure
+        if verb.dep_ == 'ROOT':
+            # ROOT verb at sentence start = strong imperative signal
+            return True
+        
+        # Check for coordinated imperatives ("Run tests and verify results")
+        if verb.dep_ == 'conj':
+            # Check if head is also imperative
+            head = verb.head
+            if head.tag_ == 'VB' and head.dep_ == 'ROOT':
+                return True
+        
+        # Check for imperatives in dependent clauses after punctuation
+        # "Note: Run the command" - "Run" follows colon
+        if verb.i > 0:
+            prev_token = doc[verb.i - 1]
+            if prev_token.pos_ == 'PUNCT' and prev_token.text in [':', ';']:
+                # After punctuation, base verb likely imperative
+                return True
+        
+        # Default: if VB at start without subject, likely imperative
+        if verb.i <= 1:
+            return True
+        
+        return False
+    
     def _find_auxiliary(self, main_verb: Token) -> Optional[Token]:
         """Find auxiliary verb for passive construction."""
         for child in main_verb.children:
@@ -761,6 +891,16 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
         # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
         evidence_score = self._apply_linguistic_clues_passive(evidence_score, construction, doc)
         
+        # === NEW LINGUISTIC BOOST for MODAL PASSIVE ACTIONS ===
+        if construction.construction_type == PassiveVoiceType.MODAL_PASSIVE:
+            action_verbs = {
+                'do', 'configure', 'install', 'run', 'execute', 'create', 'delete', 
+                'modify', 'open', 'close', 'start', 'stop', 'enable', 'disable',
+                'set', 'change', 'update', 'add', 'remove', 'build', 'deploy'
+            }
+            if construction.main_verb.lemma_ in action_verbs:
+                evidence_score += 0.4  # Strong boost for clear, actionable verbs in passive form
+        
         # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._apply_structural_clues_passive(evidence_score, construction, context or {})
         
@@ -784,7 +924,7 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
         
         if context_type == ContextType.DESCRIPTIVE:
             # Descriptive passive voice often acceptable in technical documentation
-            base_evidence = 0.3  # Low base evidence for descriptive contexts
+            base_evidence = 0.2 
         elif context_type == ContextType.INSTRUCTIONAL:
             # Instructional passive voice often problematic
             base_evidence = 0.8  # High base evidence for instructional contexts
@@ -817,6 +957,21 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
         """Apply linguistic analysis clues for passive voice detection."""
         
         main_verb = construction.main_verb
+        
+        # === LINGUISTIC CLUE: Clear agentive passives (e.g., "referenced by") ===
+        # Pattern: [past participle] + "by" + [agent]
+        # When the agent is explicitly named immediately after the verb, the ambiguity
+        # that makes passive voice problematic is removed. This is especially common
+        # and acceptable in technical writing.
+        # Examples: "referenced by", "triggered by", "used by", "called by"
+        if construction.has_by_phrase:
+            # Check if the 'by' phrase immediately follows the verb with 'agent' dependency
+            for child in main_verb.children:
+                if child.dep_ == 'agent' and child.lemma_ == 'by' and child.i > main_verb.i:
+                    # Verify the agent is close to the verb (within 3 tokens for "are referenced by")
+                    if child.i - main_verb.i <= 3:
+                        evidence_score -= 0.4  # Significantly reduce evidence for this clear pattern
+                    break
         
         # === VERB SEMANTIC ANALYSIS ===
         # State-oriented verbs are often legitimate in passive
@@ -851,7 +1006,7 @@ class PassiveVoiceAnalyzer(BaseLanguageRule):
             
             # Technical entity subjects often legitimate
             if subject.text.lower() in self.technical_entities:
-                evidence_score -= 0.2  # "The system is configured" - technical description
+                evidence_score -= 0.35  # Increased reduction for technical entities to reduce false positives
             
             # Personal pronouns as subjects less appropriate in passive
             if subject.pos_ == 'PRON' and subject.lemma_ in ['you', 'they', 'we']:

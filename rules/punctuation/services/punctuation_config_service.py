@@ -104,6 +104,22 @@ class PunctuationConfigService:
             'filesystem_terms': ['directory', 'folder', 'path', 'file']
         })
     
+    def get_grammatical_patterns(self) -> Dict[str, Any]:
+        """
+        Get grammatical patterns for zero false positive guards.
+        Includes subordinating conjunctions, coordinating conjunctions, etc.
+        Used by commas_rule and other punctuation rules.
+        """
+        config = self._load_yaml_config('punctuation_patterns')
+        return config.get('grammatical_patterns', {
+            'subordinating_conjunctions': [
+                'if', 'when', 'because', 'although', 'while', 'since', 'unless', 
+                'until', 'after', 'before', 'as', 'though', 'whereas'
+            ],
+            'coordinating_conjunctions': ['for', 'and', 'nor', 'but', 'or', 'yet', 'so'],
+            'transitional_phrases': ['however', 'therefore', 'moreover', 'furthermore']
+        })
+    
     # === LEGITIMATE ABBREVIATIONS ===
     
     def get_time_abbreviations(self) -> Dict[str, Any]:

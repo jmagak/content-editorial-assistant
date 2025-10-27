@@ -36,6 +36,10 @@ class ProgrammingElementsRule(BaseTechnicalRule):
         """
         PRODUCTION-GRADE: Evidence-based analysis for programming keyword violations.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors

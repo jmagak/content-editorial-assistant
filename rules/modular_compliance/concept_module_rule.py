@@ -1,8 +1,4 @@
-"""
-Concept Module Rule
-Evidence-based validation for concept modules following established architectural patterns.
-
-"""
+"""Concept Module Rule - validates concept modules per Red Hat modular documentation guidelines."""
 import re
 import os
 from typing import List, Optional, Dict, Any
@@ -15,23 +11,40 @@ except ImportError:
 
 
 class ConceptModuleRule(BaseRule):
-    """Evidence-based concept module validator following established patterns"""
     
     def __init__(self):
         super().__init__()
         self.rule_type = "concept_module"
         self.rule_subtype = "concept_module"
         self.parser = ModularStructureBridge()
-        
-        # Load configuration following established patterns
         self._load_config()
     
     def _get_rule_type(self) -> str:
-        """Return the rule type for BaseRule compatibility."""
         return "concept_module"
+    
+    def _detect_content_type_from_metadata(self, text: str) -> Optional[str]:
+        """
+        Detect content type from document metadata attributes.
+        
+        Looks for:
+        - :_mod-docs-content-type: PROCEDURE|CONCEPT|REFERENCE|ASSEMBLY
+        - :_content-type: (deprecated but still supported)
+        
+        Returns lowercase type or None if not found.
+        """
+        # Check for new-style attribute
+        new_style = re.search(r':_mod-docs-content-type:\s*(PROCEDURE|CONCEPT|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if new_style:
+            return new_style.group(1).lower()
+        
+        # Check for old-style attribute (deprecated but still supported)
+        old_style = re.search(r':_content-type:\s*(PROCEDURE|CONCEPT|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if old_style:
+            return old_style.group(1).lower()
+        
+        return None
         
     def _load_config(self):
-        """Load configuration following established patterns from other rules."""
         config_path = os.path.join(
             os.path.dirname(__file__), 
             'config', 
@@ -44,24 +57,17 @@ class ConceptModuleRule(BaseRule):
                     config = yaml.safe_load(f)
                     
                 self.imperative_verbs = set(config.get('imperative_verbs', []))
-                config_thresholds = config.get('thresholds', {})
-                # Override config thresholds with our fixed values
-                config_thresholds.update({
-                    'long_content_words': 300,          # Lowered from 400
-                    'very_long_content_words': 350,     # Lowered from 500  
-                })
-                self.thresholds = config_thresholds
+                self.thresholds = config.get('thresholds', {})
+                self.thresholds.setdefault('concise_introduction_words', 100)
                 self.evidence_scoring = config.get('evidence_scoring', {})
                 self.module_types = config.get('module_types', {})
                 
             except Exception:
-                # Fallback to hardcoded values if config loading fails
                 self._set_fallback_config()
         else:
             self._set_fallback_config()
     
     def _set_fallback_config(self):
-        """Set fallback configuration if config file not available."""
         self.imperative_verbs = {
             'click', 'run', 'type', 'enter', 'execute', 'select', 'start', 'stop',
             'create', 'delete', 'install', 'configure', 'edit', 'open', 'save',
@@ -69,9 +75,10 @@ class ConceptModuleRule(BaseRule):
             'navigate', 'scroll', 'press', 'choose', 'pick', 'add', 'remove'
         }
         self.thresholds = {
-            'long_content_words': 300,          # Lowered from 400 - suggest images earlier
-            'very_long_content_words': 350,     # Lowered from 500 - suggest structure earlier  
-            'substantial_content_words': 100
+            'long_content_words': 400,
+            'very_long_content_words': 500,
+            'substantial_content_words': 100,
+            'concise_introduction_words': 100
         }
         self.evidence_scoring = {
             'base_scores': {
@@ -81,39 +88,35 @@ class ConceptModuleRule(BaseRule):
             }
         }
     
-    def analyze(self, text: str, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
-        """
-        Analyze concept module compliance using direct compliance validation.
-        
-        Simple approach: Check structural requirements and content rules directly.
-        No complex evidence scoring - compliance is binary (meets requirement or doesn't).
-        """
+    def analyze(self, text: str, sentences: List[str] = None, nlp=None, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
+        context = context or {}
+        
+        # Detect content type from metadata if not provided
+        detected_type = self._detect_content_type_from_metadata(text)
+        content_type = context.get('content_type', detected_type)
         
         # Only analyze if this is a concept module
-        if context and context.get('content_type') != 'concept':
-            return errors  # Not a concept module, skip validation
+        if content_type and content_type != 'concept':
+            return errors
             
-        # Parse module structure
         structure = self.parser.parse(text)
-        
-        # Direct compliance checks - no evidence scoring complexity
         compliance_issues = []
         
-        # Structural Requirements
-        compliance_issues.extend(self._find_introduction_issues(structure))
+        compliance_issues.extend(self._validate_metadata(text))
+        compliance_issues.extend(self._find_introduction_issues(structure, text))
         compliance_issues.extend(self._find_content_issues(structure))
-        
-        # Title Validation (MISSING - now added!)
         compliance_issues.extend(self._find_title_issues(structure))
-        
-        # Content Prohibitions  
         compliance_issues.extend(self._find_procedural_content(structure, text))
-        
-        # Content Recommendations
         compliance_issues.extend(self._find_improvement_opportunities(structure))
+        compliance_issues.extend(self._detect_assembly_pattern(structure, text))
+        compliance_issues.extend(self._detect_module_nesting(text))
+        compliance_issues.extend(self._validate_heading_case(structure))
         
-        # Create errors directly from compliance issues
         for issue in compliance_issues:
             error = self._create_error(
                 sentence=issue.get('sentence', issue.get('flagged_text', '')),
@@ -121,8 +124,8 @@ class ConceptModuleRule(BaseRule):
                 message=issue.get('message', ''),
                 suggestions=issue.get('suggestions', []),
                 severity=self._map_compliance_level_to_severity(issue.get('level')),
-                text=text,      # Level 2 ✅
-                context=context, # Level 2 ✅
+                text=text,
+                context=context,
                 flagged_text=issue.get('flagged_text', ''),
                 span=issue.get('span', (0, 0))
             )
@@ -130,10 +133,7 @@ class ConceptModuleRule(BaseRule):
         
         return errors
     
-    # Simplified compliance validation - no complex evidence calculation needed
-    
     def _map_compliance_level_to_severity(self, level: str) -> str:
-        """Map compliance levels to standard severity levels."""
         mapping = {
             'FAIL': 'high',
             'WARN': 'medium',
@@ -141,56 +141,122 @@ class ConceptModuleRule(BaseRule):
         }
         return mapping.get(level, 'medium')
     
-    def _find_introduction_issues(self, structure: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check introduction requirements."""
+    def _validate_metadata(self, text: str) -> List[Dict[str, Any]]:
         issues = []
         
-        # [FAIL] No Introduction
-        if not structure.get('introduction_paragraphs'):
+        has_new_attr = ':_mod-docs-content-type:' in text
+        has_old_attr = ':_content-type:' in text and not has_new_attr
+        has_deprecated_role = '[role="_abstract"]' in text
+        
+        if has_old_attr:
             issues.append({
-                'type': 'critical_structural',
-                'level': 'FAIL',
-                'message': "Module must begin with at least one introductory paragraph immediately following the title",
-                'flagged_text': "Missing introduction",
-                'line_number': 2,  # Assume after title
+                'type': 'metadata_format',
+                'level': 'WARN',
+                'message': "Using deprecated content type attribute ':_content-type:'",
+                'flagged_text': ':_content-type:',
+                'line_number': 0,
                 'span': (0, 0),
                 'suggestions': [
-                    "Add an introductory paragraph that explains what this concept is",
-                    "Include why users should care about this concept",
-                    "Keep the introduction concise and focused"
+                    "Change ':_content-type:' to ':_mod-docs-content-type:' per Red Hat Aug 2023 update",
+                    "Update: :_mod-docs-content-type: CONCEPT"
                 ]
             })
         
-        # [WARN] Multi-paragraph Introduction
-        elif len(structure.get('introduction_paragraphs', [])) > 1:
+        if has_deprecated_role:
             issues.append({
-                'type': 'improvement_suggestion',
+                'type': 'metadata_format',
                 'level': 'WARN',
-                'message': "The introduction consists of more than one paragraph",
-                'flagged_text': "Multi-paragraph introduction",
-                'line_number': 2,
+                'message': "Using deprecated [role=\"_abstract\"] tag",
+                'flagged_text': '[role="_abstract"]',
+                'line_number': 0,
                 'span': (0, 0),
                 'suggestions': [
-                    "Combine the introduction paragraphs into a single, concise paragraph",
-                    "Move detailed explanations to the body of the concept module",
-                    "Focus the introduction on what the concept is and why it matters"
+                    "Remove [role=\"_abstract\"] tag per Red Hat Jan 2024 update",
+                    "The role tag is no longer needed for module abstracts"
                 ]
             })
         
         return issues
     
+    def _find_introduction_issues(self, structure: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
+        """
+        Validate introduction per Red Hat guidelines.
+        
+        Per Red Hat: Concept modules require a short introduction (single paragraph).
+        If the parser can't extract intro_paragraphs but document has content, assume it's present.
+        """
+        issues = []
+        intro_paragraphs = structure.get('introduction_paragraphs', [])
+        
+        # If parser didn't extract intro_paragraphs, check if document has content
+        if not intro_paragraphs:
+            total_word_count = structure.get('word_count', 0)
+            has_content = structure.get('has_content', False)
+            
+            # If document has meaningful content (>15 words), assume intro is present
+            # Parser might not extract it properly due to formatting
+            if has_content and total_word_count >= 15:
+                return issues
+        
+        if not intro_paragraphs:
+            issues.append({
+                'type': 'critical_structural',
+                'level': 'FAIL',
+                'message': "Module must begin with a single, concise introductory paragraph",
+                'flagged_text': "Missing introduction",
+                'line_number': 2,
+                'span': (0, 0),
+                'suggestions': [
+                    "Add introductory paragraph answering: What is this concept?",
+                    "Explain why users should care about this concept",
+                    "Keep introduction under 100 words for conciseness"
+                ]
+            })
+        elif len(intro_paragraphs) > 1:
+            issues.append({
+                'type': 'improvement_suggestion',
+                'level': 'WARN',
+                'message': f"Introduction has {len(intro_paragraphs)} paragraphs, should be single paragraph",
+                'flagged_text': "Multi-paragraph introduction",
+                'line_number': 2,
+                'span': (0, 0),
+                'suggestions': [
+                    "Combine into a single, concise paragraph",
+                    "Move detailed explanations to the module body"
+                ]
+            })
+        else:
+            intro_text = intro_paragraphs[0]
+            intro_word_count = len(intro_text.split())
+            max_words = self.thresholds.get('concise_introduction_words', 100)
+            
+            if intro_word_count > max_words:
+                issues.append({
+                    'type': 'improvement_suggestion',
+                    'level': 'INFO',
+                    'message': f"Introduction is {intro_word_count} words (recommended: under {max_words})",
+                    'flagged_text': intro_text[:100] + "...",
+                    'line_number': 2,
+                    'span': (0, 0),
+                    'suggestions': [
+                        "Shorten introduction to be more concise",
+                        "Move detailed information to the module body"
+                    ]
+                })
+        
+        return issues
+    
     def _find_content_issues(self, structure: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check for absence of descriptive content."""
         issues = []
         
-        # [FAIL] Absence of Descriptive Content
         body_content_indicators = (
-            len(structure.get('sections', [])) > 0 or  # Has sections beyond title
-            len(structure.get('introduction_paragraphs', [])) > 1 or  # Multiple paragraphs
-            structure.get('word_count', 0) > self.thresholds.get('substantial_content_words', 100)
+            len(structure.get('sections', [])) > 0 or
+            len(structure.get('introduction_paragraphs', [])) > 1 or
+            structure.get('word_count', 0) > 15  # Lowered from 100 - any content is acceptable
         )
         
-        if not body_content_indicators:
+        # Only flag if there's truly NO content at all
+        if not body_content_indicators and structure.get('word_count', 0) < 10:
             issues.append({
                 'type': 'critical_structural',
                 'level': 'FAIL',
@@ -208,85 +274,181 @@ class ConceptModuleRule(BaseRule):
         return issues
     
     def _find_procedural_content(self, structure: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
-        """Check for action-oriented steps (prohibited in concept modules)."""
+        """
+        Check for prohibited step-by-step procedures.
+        """
         issues = []
-        
-        # Collect all action-oriented steps first
         action_steps = []
+        
         for list_data in structure.get('ordered_lists', []):
-            for item in list_data['items']:
-                if self._starts_with_imperative(item['text']):
-                    action_steps.append({
-                        'text': item['text'],
-                        'line_number': item['line_number'],
-                        'span': item['span']
+            imperative_count = sum(1 for item in list_data['items'] if self._starts_with_imperative(item['text']))
+            sequential_indicators = ['then ', 'next,', 'next ', 'finally', 'first', 'second', 'after ']
+            has_sequential = any(
+                any(indicator in item['text'].lower() for indicator in sequential_indicators)
+                for item in list_data['items']
+            )
+            
+            if imperative_count >= 2 or (has_sequential and imperative_count >= 1):
+                action_steps.append({
+                    'text': f"Ordered list with {imperative_count} imperatives, sequential={has_sequential}",
+                    'line_number': list_data.get('start_line', 0),
+                    'span': (0, 0),
+                    'source': 'ordered_list'
                     })
         
-        # Create consolidated error if action-oriented steps found
+        for list_data in structure.get('unordered_lists', []):
+            procedural_count = sum(1 for item in list_data['items'] if self._is_procedural_step(item['text']))
+            
+            if procedural_count > 0:
+                for item in list_data['items']:
+                    if self._is_procedural_step(item['text']):
+                        action_steps.append({
+                            'text': item['text'],
+                            'line_number': item['line_number'],
+                            'span': item['span'],
+                            'source': 'unordered_list'
+                        })
+        
+        sequential_indicators = ['first', 'then', 'next', 'finally', 'after that', 'subsequently']
+        sentences = re.split(r'[.!?]+\s+', text)
+        
+        sequential_sentences = []
+        for sentence in sentences:
+            sentence_lower = sentence.lower().strip()
+            if any(sentence_lower.startswith(ind) for ind in sequential_indicators):
+                for ind in sequential_indicators:
+                    if sentence_lower.startswith(ind):
+                        remainder = sentence_lower[len(ind):].strip(',: ')
+                        words = remainder.split()
+                        if words and words[0] in self.imperative_verbs:
+                            sequential_sentences.append(sentence.strip())
+                            break
+        
+        if len(sequential_sentences) >= 2:
+            action_steps.append({
+                'text': f"{len(sequential_sentences)} sequential procedural sentences",
+                'line_number': 0,
+                'span': (0, 0),
+                'source': 'paragraph'
+            })
+        
         if action_steps:
             step_count = len(action_steps)
-            examples = [step['text'][:60] + "..." if len(step['text']) > 60 else step['text'] 
-                       for step in action_steps[:3]]  # Show up to 3 examples
-            
-            if step_count == 1:
-                message = f"Contains action-oriented step: \"{examples[0]}\""
-            else:
-                message = f"Contains {step_count} action-oriented steps"
-                if len(examples) < step_count:
-                    message += f" (showing first {len(examples)})"
-            
-            # Use the first step's location for the error
+            examples = [s['text'][:60] + "..." if len(s['text']) > 60 else s['text'] for s in action_steps[:3]]
             first_step = action_steps[0]
             
             issues.append({
                 'type': 'prohibited_content',
                 'level': 'FAIL',
-                'message': message,
-                'flagged_text': f"{step_count} procedural step(s) found",
+                'message': f"Contains {step_count} procedural step(s) - move to procedure module",
+                'flagged_text': f"{step_count} procedural steps",
                 'line_number': first_step['line_number'],
                 'span': first_step['span'],
                 'suggestions': [
-                    "Move procedural steps to a procedure module",
-                    "Replace imperative instructions with descriptive explanations", 
-                    "Focus on explaining concepts rather than giving commands",
-                    f"Examples of problematic steps: {', '.join(examples)}" if step_count > 1 else None
+                    "Move step-by-step instructions to a procedure module",
+                    "Replace with descriptive explanation of the process",
+                    "Simple actions are allowed per Red Hat 2021 guidelines",
+                    f"Examples: {', '.join(examples)}"
                 ]
             })
-            
-            # Remove None values from suggestions
-            issues[0]['suggestions'] = [s for s in issues[0]['suggestions'] if s is not None]
         
         return issues
     
+    def _is_procedural_step(self, text: str) -> bool:
+        """
+        Determine if text is a procedural step vs allowed simple action.
+        
+        Default: ALLOW simple actions (permissive)
+        Flag: Only clear multi-step procedures (restrictive)
+        """
+        text_lower = text.lower().strip()
+        
+        if not self._starts_with_imperative(text):
+            return False
+        
+        # Explicit indicators of multi-step procedure (PROHIBITED)
+        procedural_indicators = [
+            r'^\d+\.',
+            r'step\s+\d+',
+            r'\bthen\s+',
+            r'\bnext,?\s+',
+            r'after\s+that',
+            r'finally,?\s+',
+            r'and\s+then',
+            r'first,?\s+',
+            r'second,?\s+',
+            r'subsequently',
+        ]
+        
+        for indicator in procedural_indicators:
+            if re.search(indicator, text_lower):
+                return True
+        
+        # Very long instructions are likely procedural
+        if len(text.split()) > 15:
+            return True
+        
+        # Default: ALLOW (per Red Hat 2021 - simple actions are permitted)
+        return False
+    
     def _find_title_issues(self, structure: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check for title format issues - THIS WAS MISSING!"""
+        """
+        Validate concept module titles per Red Hat guidelines.
+        
+        Per Red Hat modular docs, concept titles SHOULD start with:
+        - "Understanding [topic]"  
+        - "About [topic]"
+        - "What is [topic]"
+        - "Overview of [topic]"
+        
+        They should NOT use procedural gerunds like "Installing", "Configuring", etc.
+        """
         issues = []
         
         title = structure.get('title', '')
         if not title:
             return issues
         
-        # [WARN] Procedural Title - contains words ending with "-ing" 
-        words = title.split()
-        gerund_words = [word for word in words if word.lower().endswith('ing')]
+        title_lower = title.lower()
         
-        if gerund_words:
-            issues.append({
-                'type': 'title_format', 
-                'level': 'WARN',
-                'message': f'Title "{title}" appears procedural (contains gerund words: {", ".join(gerund_words)})',
-                'flagged_text': title,
-                'line_number': 1,
-                'span': (0, len(title)),
-                'suggestions': [
-                    'Use a noun phrase instead of gerund words for concept titles',
-                    f'Consider changing to: "Authentication Tokens" instead of "{title}"',
-                    'Concept modules should describe "what" something is, not "how" to do it',
-                    f'Remove procedural words like: {", ".join(gerund_words)}'
-                ]
-            })
+        # Red Hat RECOMMENDED concept title patterns (do NOT flag these)
+        recommended_patterns = [
+            'understanding',  # "Understanding software templates"
+            'about',          # "About authentication"
+            'what is',        # "What is a template"
+            'what are',       # "What are security groups"
+            'overview of',    # "Overview of deployment"
+        ]
         
-        # [WARN] Question-style Title
+        # Check if title starts with recommended patterns
+        starts_with_recommended = any(title_lower.startswith(pattern) for pattern in recommended_patterns)
+        
+        if not starts_with_recommended:
+            # Only flag PROCEDURAL gerunds, not concept-appropriate ones
+            procedural_gerunds = [
+                'installing', 'configuring', 'deploying', 'creating', 'setting up',
+                'building', 'developing', 'implementing', 'managing', 'troubleshooting'
+            ]
+            
+            words = title_lower.split()
+            bad_gerunds = [word for word in words if any(word.startswith(pg) for pg in procedural_gerunds)]
+            
+            if bad_gerunds:
+                issues.append({
+                    'type': 'title_format', 
+                    'level': 'WARN',
+                    'message': f'Title "{title}" uses procedural gerund inappropriate for concepts',
+                    'flagged_text': title,
+                    'line_number': 1,
+                    'span': (0, len(title)),
+                    'suggestions': [
+                        f'Use "Understanding {title[len(bad_gerunds[0]):].strip()}" instead',
+                        f'Or use "About {title[len(bad_gerunds[0]):].strip()}"',
+                        'Concept titles should use "Understanding", "About", or "What is"',
+                        'Procedural titles belong in procedure modules'
+                    ]
+                })
+        
         if title.endswith('?'):
             issues.append({
                 'type': 'title_format',
@@ -297,7 +459,7 @@ class ConceptModuleRule(BaseRule):
                 'span': (0, len(title)),
                 'suggestions': [
                     'Use a declarative noun phrase instead of a question',
-                    'Concept titles should state what the concept is',
+                    'Convert question to statement form',
                     'Questions are better suited for procedure or troubleshooting topics'
                 ]
             })
@@ -305,12 +467,9 @@ class ConceptModuleRule(BaseRule):
         return issues
     
     def _find_improvement_opportunities(self, structure: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check for improvement opportunities."""
         issues = []
-        
         word_count = structure.get('word_count', 0)
         
-        # [INFO] Lacks Visuals
         if word_count > self.thresholds.get('long_content_words', 400) and len(structure.get('images', [])) == 0:
             issues.append({
                 'type': 'improvement_suggestion',
@@ -326,7 +485,6 @@ class ConceptModuleRule(BaseRule):
                 ]
             })
         
-        # [INFO] Lacks Structure for Long Content
         if (word_count > self.thresholds.get('very_long_content_words', 500) and 
             len(structure.get('sections', [])) <= 1):
             issues.append({
@@ -346,12 +504,191 @@ class ConceptModuleRule(BaseRule):
         return issues
     
     def _starts_with_imperative(self, text: str) -> bool:
-        """Check if text starts with an imperative verb."""
         words = text.lower().split()
         if not words:
             return False
-        
-        first_word = words[0].strip('.,!?:;')
-        return first_word in self.imperative_verbs
+        return words[0].strip('.,!?:;') in self.imperative_verbs
     
-    # Simple compliance validation - messages and suggestions come directly from compliance issues
+    def _detect_assembly_pattern(self, structure: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
+        issues = []
+        assembly_indicators = []
+        
+        if len(structure.get('tables', [])) > 0:
+            table_cells = structure.get('table_cells', [])
+            workflow_keywords = ['step', 'phase', 'stage', 'install', 'configure', 'deploy', 'create', 'update', 'manage']
+            workflow_count = sum(1 for cell in table_cells if any(keyword in cell['text'].lower() for keyword in workflow_keywords))
+            
+            if workflow_count >= 3:
+                assembly_indicators.append('workflow_table')
+        
+        major_sections = [s for s in structure.get('sections', []) if s.get('level', 0) == 2]
+        if len(major_sections) >= 4:
+            assembly_indicators.append('multiple_sections')
+        
+        user_story_patterns = [
+            r'as a[n]?\s+\w+',  # "As a user/admin/developer"
+            r'i want to\s+\w+',  # "I want to configure"
+            r'so that\s+\w+',   # "so that it works"
+            r'user\s+story',
+            r'user\s+goal',
+            r'workflow',
+            r'development\s+workflow',
+            r'process',
+            r'lifecycle'
+        ]
+        
+        user_story_matches = sum(1 for pattern in user_story_patterns if re.search(pattern, text.lower()))
+        if user_story_matches >= 2:
+            assembly_indicators.append('user_story_language')
+        
+        has_conceptual = len(structure.get('introduction_paragraphs', [])) > 0
+        has_procedural = any(self._starts_with_imperative(cell.get('text', '')) for cell in structure.get('table_cells', []))
+        has_reference = len(structure.get('tables', [])) > 0
+        
+        mixed_count = sum([has_conceptual, has_procedural, has_reference])
+        if mixed_count >= 2:
+            assembly_indicators.append('mixed_content_types')
+        
+        if len(assembly_indicators) >= 2:
+            issues.append({
+                'type': 'structural_recommendation',
+                'level': 'WARN',
+                'message': f"Content structure suggests this should be an assembly, not a concept module",
+                'flagged_text': f"Assembly pattern detected: {', '.join(assembly_indicators)}",
+                'line_number': 0,
+                'span': (0, 0),
+                'suggestions': [
+                    "Consider restructuring as an assembly that includes multiple modules",
+                    "Per Red Hat: 'Each assembly documents a user story' (https://redhat-documentation.github.io/modular-docs/#what-modular-documentation-is)",
+                    "Break content into separate concept, procedure, and reference modules",
+                    "Create an assembly file that includes these modules",
+                    f"Indicators: {', '.join(assembly_indicators)}"
+                ]
+            })
+        
+        return issues
+    
+    def _detect_module_nesting(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Detect if module contains other modules (antipattern per Red Hat 2021).
+        
+        Per Red Hat June 2021: "A module should not contain another module."
+        However: "a module can contain a text snippet"
+        
+        """
+        issues = []
+        
+        # Look for include directives that reference modules (not snippets)
+        module_include_patterns = [
+            r'include::(?:.*/)?\bcon_[^[\]]*\.adoc',  # con_ prefix
+            r'include::(?:.*/)?\bproc_[^[\]]*\.adoc',  # proc_ prefix
+            r'include::(?:.*/)?\bref_[^[\]]*\.adoc',  # ref_ prefix
+            r'include::(?:.*/)?modules/[^[\]]*\.adoc'  # Module directory
+        ]
+        
+        module_includes = []
+        for pattern in module_include_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            module_includes.extend(matches)
+        
+        snippet_patterns = [
+            r'include::(?:.*/)?\b(?:snippet|_snippet)[^[\]]*\.adoc',
+            r'include::(?:.*/)?snippets/[^[\]]*\.adoc'
+        ]
+        
+        filtered_includes = []
+        for inc in module_includes:
+            is_snippet = any(re.match(sp, inc, re.IGNORECASE) for sp in snippet_patterns)
+            if not is_snippet:
+                filtered_includes.append(inc)
+        
+        module_includes = filtered_includes
+        
+        if module_includes:
+            issues.append({
+                'type': 'module_nesting_antipattern',
+                'level': 'FAIL',
+                'message': f"Module contains {len(module_includes)} other module(s) via include directives",
+                'flagged_text': f"Module nesting detected: {len(module_includes)} includes",
+                'line_number': 0,
+                'span': (0, 0),
+                'suggestions': [
+                    "Per Red Hat 2021: 'A module should not contain another module'",
+                    "Move this content to an assembly file (assembly_*.adoc)",
+                    "Assemblies are designed to include multiple modules",
+                    "Text snippets (include::snippets/*.adoc) are allowed, but not full modules",
+                    f"Found includes: {', '.join(module_includes[:3])}{'...' if len(module_includes) > 3 else ''}",
+                    "See: https://redhat-documentation.github.io/modular-docs/#creating-modules"
+                ]
+            })
+        
+        return issues
+    
+    def _validate_heading_case(self, structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+        issues = []
+        
+        for section in structure.get('sections', []):
+            heading = section.get('title', '')
+            if not heading or section.get('level', 0) == 0:
+                continue
+            
+            words = heading.split()
+            if len(words) < 2:
+                continue
+            
+            capitalized_count = 0
+            short_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with'}
+            
+            for i, word in enumerate(words[1:], start=1):
+                clean_word = word.strip('.,!?:;()[]{}')
+                if not clean_word:
+                    continue
+                
+                if clean_word[0].isupper() and clean_word.lower() not in short_words:
+                    if not (clean_word.isupper() or self._is_proper_noun(clean_word)):
+                        capitalized_count += 1
+            
+            if capitalized_count >= 2:
+                issues.append({
+                    'type': 'heading_format',
+                    'level': 'WARN',
+                    'message': f'Heading uses title case instead of sentence case: "{heading}"',
+                    'flagged_text': heading,
+                    'line_number': section.get('line_number', 0),
+                    'span': section.get('span', (0, 0)),
+                    'suggestions': [
+                        f'Convert to sentence case: "{self._to_sentence_case(heading)}"',
+                        "Per Red Hat 2022: Use sentence case for headings",
+                        "Capitalize only: first word, proper nouns, and acronyms",
+                        "See: https://redhat-documentation.github.io/modular-docs/#whats-new"
+                    ]
+                })
+        
+        return issues
+    
+    def _is_proper_noun(self, word: str) -> bool:
+        proper_nouns = {
+            'red', 'hat', 'linux', 'kubernetes', 'openshift', 'ansible', 'docker',
+            'python', 'java', 'javascript', 'api', 'rest', 'http', 'https', 'ssh',
+            'tcp', 'ip', 'dns', 'url', 'uri', 'json', 'xml', 'yaml', 'html', 'css'
+        }
+        return word.lower() in proper_nouns
+    
+    def _to_sentence_case(self, heading: str) -> str:
+        words = heading.split()
+        if not words:
+            return heading
+        
+        result = [words[0]]
+        short_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with'}
+        
+        for word in words[1:]:
+            clean_word = word.strip('.,!?:;()[]{}')
+            if clean_word.isupper() or self._is_proper_noun(clean_word):
+                result.append(word)
+            elif clean_word.lower() in short_words:
+                result.append(clean_word.lower())
+            else:
+                result.append(clean_word.lower())
+        
+        return ' '.join(result)

@@ -8,7 +8,6 @@ let sessionId = null;
 document.addEventListener('DOMContentLoaded', function() {
     initializeSocket();
     initializeTooltips();
-    initializeFileHandlers();
     initializeInteractivity();
 });
 
@@ -94,17 +93,16 @@ function initializeFileHandlers() {
             }
         });
 
-        // File input change handler
+        // Single unified file input change handler
         fileInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
+                // Clear text input when file is selected
+                if (textInput) textInput.value = '';
+                
+                // Handle the file upload
                 handleFileUpload(e.target.files[0]);
                 hideSampleSection();
             }
-        });
-
-        // Clear text input when file is selected
-        fileInput.addEventListener('change', () => {
-            if (textInput) textInput.value = '';
         });
     }
 

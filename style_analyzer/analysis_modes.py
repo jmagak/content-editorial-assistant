@@ -427,15 +427,15 @@ class AnalysisModeExecutor:
         return errors
 
     def _analyze_nested_lists_in_item(self, list_item, analysis_mode: AnalysisMode):
-        """Recursively analyze nested lists within a list item."""
+        """Recursively analyze ALL nested blocks within a list item (lists, paragraphs, admonitions, etc.)."""
         try:
-            # Check if this list item has children that are lists
+            # Check if this list item has children
             children = getattr(list_item, 'children', [])
             for child in children:
                 if hasattr(child, 'block_type'):
                     block_type = getattr(child.block_type, 'value', str(child.block_type))
                     
-                    # If child is a nested list, analyze it
+                    # If child is a nested list, analyze it using specialized list methods
                     if block_type in ['olist', 'ulist', 'ordered_list', 'unordered_list']:
                         # Get context for the nested list
                         child_context = child.get_context_info() if hasattr(child, 'get_context_info') else {}
@@ -453,11 +453,27 @@ class AnalysisModeExecutor:
                         child._analysis_errors.extend(nested_errors)
                         child._already_analyzed = True
                     
+                    # **FIX**: Analyze ALL other block types (paragraphs, admonitions, etc.)
+                    # Skip code blocks (listing/literal) as they should not be analyzed
+                    elif not child.should_skip_analysis():
+                        child_content = child.get_text_content() if hasattr(child, 'get_text_content') else ''
+                        if isinstance(child_content, str) and child_content.strip():
+                            child_context = child.get_context_info() if hasattr(child, 'get_context_info') else {}
+                            
+                            # Analyze using the appropriate method based on block type
+                            child_errors = self.analyze_block_content(child, child_content, analysis_mode, child_context)
+                            
+                            # Store errors on the child block
+                            if not hasattr(child, '_analysis_errors'):
+                                child._analysis_errors = []
+                            child._analysis_errors.extend(child_errors)
+                            child._already_analyzed = True
+                    
                     # Recursively check children of this child for even deeper nesting
                     self._analyze_nested_lists_in_item(child, analysis_mode)
                         
         except Exception as e:
-            logger.error(f"Error analyzing nested lists in item: {e}")
+            logger.error(f"Error analyzing nested blocks in list item: {e}")
 
     def _analyze_list_parallel_structure(self, list_items: List[str], analysis_mode: AnalysisMode, 
                                        block_context: Optional[dict] = None) -> List[ErrorDict]:

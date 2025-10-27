@@ -30,9 +30,18 @@ class PronounsRule(BaseLanguageRule):
         
         Note: Ambiguous reference resolution is handled by the ambiguity module.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
+
+        # === SURGICAL ZERO FALSE POSITIVE GUARD ===
+        # CRITICAL: Code blocks are exempt from prose style rules
+        if context and context.get('block_type') in ['code_block', 'literal_block', 'inline_code']:
+            return []
 
         doc = nlp(text)
         gendered_pronouns = {'he', 'him', 'his', 'she', 'her', 'hers'}

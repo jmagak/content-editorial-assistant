@@ -310,3 +310,66 @@ feedback_patterns:
     - "and/or" # Users consistently want this flagged
     - "he/she" # Users prefer gender-neutral alternatives
     - "his/her" # Users prefer inclusive language
+
+# Grammatical Patterns
+# Patterns that identify specific grammatical structures for zero false positive guards
+grammatical_patterns:
+  # Subordinating conjunctions that introduce dependent clauses
+  # Used by commas_rule.py to prevent false positives for introductory clauses
+  subordinating_conjunctions:
+    # Time relationships
+    - after
+    - before
+    - since
+    - until
+    - when
+    - whenever
+    - while
+    
+    # Cause and effect
+    - because
+    - as
+    - since
+    
+    # Conditional
+    - if
+    - unless
+    - provided
+    - assuming
+    
+    # Contrast
+    - although
+    - though
+    - whereas
+    - while
+    
+    # Purpose
+    - so that
+    - in order that
+    
+    # Common compound conjunctions
+    - even though
+    - even if
+    - as long as
+    - as soon as
+  
+  # Coordinating conjunctions (FANBOYS)
+  coordinating_conjunctions:
+    - for
+    - and
+    - nor
+    - but
+    - or
+    - yet
+    - so
+  
+  # Transitional phrases that may affect comma usage
+  transitional_phrases:
+    - however
+    - therefore
+    - moreover
+    - furthermore
+    - nevertheless
+    - nonetheless
+    - consequently
+    - accordingly

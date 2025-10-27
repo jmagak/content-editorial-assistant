@@ -132,6 +132,8 @@ technical_mass_nouns:
     - monitoring
     - logging
     - debugging
+    - authentication
+    - authorization
     - testing
     - optimization
     - configuration
@@ -141,6 +143,8 @@ technical_mass_nouns:
     - compliance
     - governance
     - oversight
+    - workflow
+    - integration
     
   # Resource terms
   resource:
@@ -177,7 +181,7 @@ technical_mass_nouns:
     - malware
     - feedback
     - research
-    - analysis
+    # Handle contextually in code instead
     - synthesis
     - knowledge
     - expertise

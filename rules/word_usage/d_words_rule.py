@@ -25,6 +25,10 @@ class DWordsRule(BaseWordUsageRule):
         Computes a nuanced evidence score per occurrence considering linguistic,
         structural, semantic, and feedback clues.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -151,9 +155,25 @@ class DWordsRule(BaseWordUsageRule):
         return ev
 
     def _apply_semantic_clues_d_words(self, ev: float, word: str, text: str, context: Dict[str, Any]) -> float:
-        """Apply semantic and content-type clues for D-words."""
+        """
+        Apply semantic and content-type clues for D-words.
+        
+        WORLD-CLASS ENHANCEMENT: Domain-aware guard for technical terminology.
+        This method now includes sophisticated detection of technical contexts where
+        'disable' is the correct, precise terminology rather than a user-focus violation.
+        """
         content_type = context.get('content_type', 'general')
         word_lower = word.lower()
+        
+        # === DOMAIN-AWARE GUARD for "disable" ===
+        # In technical domains (firmware, drivers, APIs, system states), "disable" 
+        # is the correct, precise terminology. This guard detects those contexts and prevents false positives.
+        if word_lower == 'disable':
+            # Check if this word appears in a technical/system context
+            if self._is_technical_domain_context_d_words(word, text, context):
+                # Strong suppression - this is correct technical terminology
+                ev -= 0.95
+                return max(0.0, ev)  # Return early if we've determined this is technical usage
         
         if content_type == 'tutorial':
             if word_lower in ['disable', 'desire', 'double click']:
@@ -163,6 +183,141 @@ class DWordsRule(BaseWordUsageRule):
                 ev += 0.1  # Technical docs need standard terminology
         
         return ev
+
+    def _is_technical_domain_context_d_words(self, word: str, text: str, context: Dict[str, Any]) -> bool:
+        """
+        WORLD-CLASS GUARD: Detect if "disable" appears in a technical domain context
+        where it is the correct, precise terminology.
+        
+        This guard checks for technical keywords in the surrounding sentence to identify contexts
+        where "disable" is appropriate technical terminology rather than a user-focus violation.
+        
+        Examples of appropriate usage:
+        - "disable C-states in the firmware"
+        - "disable the driver in the kernel"
+        - "disable the API endpoint"
+        - "disable the feature flag"
+        
+        Args:
+            word: The word being evaluated ("disable")
+            text: The full text being analyzed
+            context: Context dictionary with metadata about the document
+            
+        Returns:
+            True if this is a technical domain usage (suppress the violation)
+            False if this should be flagged for user-focus improvement
+        """
+        word_lower = word.lower()
+        
+        # === TIER 1: Comprehensive Technical Keywords ===
+        # These keywords indicate firmware, system, driver, API, or configuration contexts
+        # where "disable" is the standard technical verb.
+        technical_keywords = {
+            # Hardware & Firmware
+            'firmware', 'efi', 'bios', 'uefi', 'bootloader', 'rom', 'nvram',
+            
+            # System & Kernel
+            'kernel', 'driver', 'module', 'daemon', 'service', 'process', 'thread',
+            
+            # Hardware States & Features
+            'c-state', 'p-state', 'd-state', 's-state', 'acpi', 'power state',
+            'cpu', 'processor', 'core', 'thread', 'interrupt', 'dma',
+            
+            # Configuration & Settings
+            'setting', 'option', 'parameter', 'configuration', 'config',
+            'flag', 'switch', 'toggle', 'property', 'attribute',
+            
+            # Features & Capabilities
+            'feature', 'capability', 'function', 'functionality', 'mode',
+            'extension', 'plugin', 'add-on', 'component',
+            
+            # APIs & Programming
+            'api', 'interface', 'endpoint', 'method', 'function', 'call',
+            'protocol', 'service', 'routine', 'procedure',
+            
+            # Network & Communication
+            'port', 'socket', 'connection', 'channel', 'stream',
+            'protocol', 'network', 'interface',
+            
+            # Security & Access Control
+            'permission', 'privilege', 'access control', 'policy',
+            'authentication', 'authorization', 'encryption',
+            
+            # Virtualization & Containers
+            'virtual machine', 'vm', 'container', 'hypervisor', 'guest',
+            'namespace', 'cgroup',
+            
+            # Storage & Filesystems
+            'partition', 'volume', 'mount', 'filesystem', 'block device',
+            
+            # System Management
+            'registry', 'systemd', 'sysctl', 'proc', 'sys',
+        }
+        
+        # === TIER 2: Technical Action Verbs ===
+        # These verbs often appear alongside "disable" in technical contexts
+        technical_action_verbs = {
+            'configure', 'set', 'modify', 'change', 'adjust', 'tune',
+            'initialize', 'load', 'unload', 'start', 'stop', 'restart',
+            'activate', 'deactivate', 'enable', 'invoke', 'trigger', 'call'
+        }
+        
+        # === TIER 3: Document Type Indicators ===
+        # Check if document metadata indicates technical reference material
+        doc_type = context.get('doc_type', '').lower()
+        if doc_type in ['reference', 'man_page', 'api_docs', 'system_admin', 'configuration']:
+            return True
+        
+        # Check content type
+        content_type = context.get('content_type', '').lower()
+        if content_type in ['concept', 'reference', 'technical', 'procedure', 'procedural']:
+            # For CONCEPT documents (like the example), check for technical keywords
+            # For others, this is likely technical documentation
+            text_lower = text.lower()
+            
+            # Count technical keyword density
+            keyword_hits = sum(1 for keyword in technical_keywords if keyword in text_lower)
+            
+            # If we have multiple technical keywords in the document, this is technical content
+            if keyword_hits >= 2:
+                return True
+        
+        # === TIER 4: Sentence-Level Analysis ===
+        # Analyze the immediate sentence context around the word
+        # This is the most precise check - look for technical keywords in the same sentence
+        
+        # Find sentences containing the word (case-insensitive search)
+        import re
+        sentences = re.split(r'[.!?]+', text)
+        
+        for sentence in sentences:
+            if word_lower in sentence.lower():
+                sentence_lower = sentence.lower()
+                
+                # Check for technical keywords in this sentence
+                if any(keyword in sentence_lower for keyword in technical_keywords):
+                    return True
+                
+                # Check for technical action verbs near "disable"
+                if any(verb in sentence_lower for verb in technical_action_verbs):
+                    return True
+                
+                # Check for technical patterns (e.g., "enable/disable the...")
+                # which is common in technical documentation
+                if re.search(r'\b(enable|disable)\s+(?:the\s+)?(?:individual\s+)?[a-z\-]+\b', sentence_lower):
+                    # Check if what follows is a technical term
+                    following_words = re.findall(r'\b(enable|disable)\s+(?:the\s+)?(?:individual\s+)?([a-z\-]+)\b', sentence_lower)
+                    for _, following_word in following_words:
+                        if following_word in technical_keywords or '-' in following_word:
+                            return True
+        
+        # === TIER 5: Code/Command Context ===
+        # Check if the word appears in a code block or command-line context
+        block_type = context.get('block_type', '')
+        if block_type in ['code', 'command', 'terminal', 'shell', 'listing', 'literal']:
+            return True
+        
+        return False  # Not a technical domain context - normal user-focus check applies
 
     def _apply_feedback_clues_d_words(self, ev: float, word: str, context: Dict[str, Any]) -> float:
         """Apply feedback pattern clues for D-words."""

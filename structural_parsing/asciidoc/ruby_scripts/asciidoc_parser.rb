@@ -21,8 +21,9 @@ def get_cleaned_text(node, field = :source)
 
   # **PRODUCTION-GRADE FIX**: Globally strip AsciiDoc inline comments (e.g., // comment)
   # from the final content to prevent them from ever being analyzed or displayed.
-  # This regex handles comments at the end of a line, with or without preceding space.
-  raw_text.gsub(/\s*\/\/.*/, '').strip
+  # **CRITICAL**: Don't match // in URLs (https:// or http://)
+  # Only match // that comes after whitespace (actual comments), not after : or /
+  raw_text.gsub(/(?<!:)(?<!\/)\s\/\/.*/, '').strip
 end
 
 
@@ -103,7 +104,18 @@ def node_to_hash(node)
   if node.context == :table
     (node.rows.head + node.rows.body + node.rows.foot).each do |row|
         row_hash = { 'context' => 'table_row', 'children' => [], 'lineno' => row.first&.lineno || node.lineno, 'attributes' => {} }
-        row.each { |cell| row_hash['children'] << node_to_hash(cell) }
+        row.each do |cell|
+          cell_hash = node_to_hash(cell)
+          
+          # **FIX**: If this is an AsciiDoc-style cell (a|), it can contain nested blocks.
+          # The inner_document contains the parsed blocks like lists, admonitions, paragraphs.
+          if cell.style == :asciidoc && cell.respond_to?(:inner_document) && cell.inner_document
+            inner_blocks = cell.inner_document.blocks || []
+            cell_hash['children'] = inner_blocks.map { |block| node_to_hash(block) }.compact
+          end
+          
+          row_hash['children'] << cell_hash
+        end
         node_hash['children'] << row_hash
     end
   end

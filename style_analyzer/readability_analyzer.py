@@ -6,7 +6,6 @@ Designed for zero false positives with conservative thresholds.
 
 import logging
 from typing import List, Optional, Any
-import textstat
 
 try:
     import spacy
@@ -45,6 +44,7 @@ class ReadabilityAnalyzer:
             return errors
             
         try:
+            import textstat  # Lazy import after main.py configures NLTK
             # Use SpaCy to better understand sentence boundaries
             doc = nlp(text)
             sentence_count = len(list(doc.sents))
@@ -82,6 +82,7 @@ class ReadabilityAnalyzer:
             return errors
             
         try:
+            import textstat  # Lazy import after main.py configures NLTK
             # More conservative thresholds
             conservative_min_score = (
                 self.rules['min_readability_score'] - 
@@ -124,6 +125,7 @@ class ReadabilityAnalyzer:
         min_length = CONSERVATIVE_THRESHOLDS['minimal_safe_text_length']
         if len(text) > min_length:
             try:
+                import textstat  # Lazy import after main.py configures NLTK
                 flesch_score = safe_textstat_call(getattr(textstat, 'flesch_reading_ease', lambda x: 0), text)
                 threshold = CONSERVATIVE_THRESHOLDS['minimal_safe_readability_threshold']
                 
@@ -161,6 +163,7 @@ class ReadabilityAnalyzer:
             return metrics
             
         try:
+            import textstat  # Lazy import after main.py configures NLTK
             # Use safe textstat calls for all metrics
             metrics['flesch_reading_ease'] = safe_textstat_call(
                 getattr(textstat, 'flesch_reading_ease', lambda x: 0), text

@@ -1,7 +1,30 @@
 // Initialize Socket.IO connection
 function initializeSocket() {
     console.log('🔍 DEBUG: Initializing Socket.IO connection...');
-    socket = io();
+    
+    // Configure Socket.IO with extended timeouts for long-running operations
+    socket = io({
+        // Extended timeout for long-running analysis operations
+        timeout: 300000, // 5 minutes in milliseconds
+        
+        // Reconnection settings
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        
+        // Ping/pong settings to keep connection alive
+        pingInterval: 25000, // 25 seconds
+        pingTimeout: 60000,  // 1 minute
+        
+        // Transport settings
+        transports: ['websocket', 'polling'],
+        upgrade: true,
+        
+        // Connection settings
+        autoConnect: true,
+        forceNew: false
+    });
     
     socket.on('connect', function() {
         console.log('✅ Connected to server');
@@ -28,7 +51,10 @@ function initializeSocket() {
     });
     
     socket.on('progress_update', function(data) {
-        console.log('📡 WebSocket: progress_update event received');
+        console.log('%c📡 WEBSOCKET EVENT RECEIVED', 'background: #0066cc; color: white; font-size: 14px; padding: 4px 8px; border-radius: 3px;');
+        console.log('   📊 Progress:', data.progress);
+        console.log('   🏷️  Step:', data.step);
+        console.log('   📝 Status:', data.status);
         handleProgressUpdate(data);
     });
     
@@ -61,24 +87,27 @@ function initializeSocket() {
 
 // Handle real-time progress updates with PatternFly components
 function handleProgressUpdate(data) {
-    console.log('\n🔍 DEBUG FRONTEND PROGRESS UPDATE:');
-    console.log('   📊 Received progress data:', data);
-    console.log('   📋 Data keys:', Object.keys(data));
-    console.log('   📋 Progress value:', data.progress);
-    console.log('   📋 Step value:', data.step);
-    console.log('   📋 Status value:', data.status);
-    console.log('   📋 Detail value:', data.detail);
+    console.log('\n🎯 ============ WEBSOCKET PROGRESS UPDATE RECEIVED ============');
+    console.log('   📊 Progress:', data.progress + '%');
+    console.log('   🏷️  Step:', data.step);
+    console.log('   📝 Status:', data.status);
+    console.log('   💬 Detail:', data.detail);
+    console.log('   🆔 Session:', data.session_id);
+    console.log('   ⏰ Timestamp:', new Date().toISOString());
+    console.log('============================================================\n');
     
+    // Update legacy status elements if they exist
     const statusElement = document.getElementById('current-status');
     const detailElement = document.getElementById('status-detail');
     
     if (statusElement && detailElement) {
         statusElement.textContent = data.status;
         detailElement.textContent = data.detail;
-        console.log('   ✅ Updated status elements');
-    } else {
-        console.log('   ⚠️  Status elements not found');
+        console.log('   ✅ Updated legacy status elements');
     }
+    
+    // 🆕 UPDATE LIVE PROGRESS BAR (NEW WORLD-CLASS UI)
+    updateLiveProgressBar(data);
     
     // Update step indicators based on actual progress
     console.log('   🔄 Updating step indicators...');
@@ -104,6 +133,311 @@ function handleProgressUpdate(data) {
     }
     console.log('   ✅ Progress update handling complete\n');
 }
+
+// Queue for pending updates (to ensure minimum display time)
+window.progressUpdateQueue = window.progressUpdateQueue || [];
+window.isProcessingUpdate = window.isProcessingUpdate || false;
+window.lastUpdateTime = window.lastUpdateTime || 0;
+
+// Update live progress bar with MINIMUM DISPLAY TIME for each stage
+function updateLiveProgressBar(data) {
+    console.log('🔥 updateLiveProgressBar called with:', {
+        step: data.step,
+        status: data.status,
+        detail: data.detail,
+        progress: data.progress
+    });
+    
+    // Get progress elements
+    const progressIndicator = document.getElementById('live-progress-indicator');
+    const progressPercentage = document.getElementById('live-progress-percentage');
+    const progressStatus = document.getElementById('live-progress-status');
+    const progressDetail = document.getElementById('live-progress-detail');
+    const progressBarElement = document.getElementById('live-progress-bar-element');
+    const stageIcon = document.getElementById('live-stage-icon');
+    const stageText = document.getElementById('live-stage-text');
+    
+    console.log('🔍 Elements found:', {
+        progressIndicator: !!progressIndicator,
+        progressStatus: !!progressStatus,
+        stageText: !!stageText
+    });
+    
+    // If elements don't exist, wait briefly and retry once
+    if (!progressIndicator || !progressPercentage) {
+        console.log('   ⏳ Live progress elements not found yet, waiting for DOM...');
+        
+        // Retry after 100ms to give DOM time to render
+        setTimeout(() => {
+            const retryIndicator = document.getElementById('live-progress-indicator');
+            const retryPercentage = document.getElementById('live-progress-percentage');
+            
+            if (retryIndicator && retryPercentage) {
+                console.log('   ✅ Retry successful - elements now found, updating...');
+                updateLiveProgressBar(data); // Recursive call with same data
+            } else {
+                console.log('   ⚠️  Live progress elements still not found (analysis may be complete)');
+            }
+        }, 100);
+        return;
+    }
+    
+    // Add to queue and process with minimum display time
+    window.progressUpdateQueue.push(data);
+    processProgressQueue();
+}
+
+// Process progress updates
+function processProgressQueue() {
+    if (window.isProcessingUpdate || window.progressUpdateQueue.length === 0) {
+        return;
+    }
+    
+    const MINIMUM_DISPLAY_TIME = 500; // 500ms minimum per stage (11 messages × 500ms = 5.5s total - fast but visible!)
+    const timeSinceLastUpdate = Date.now() - window.lastUpdateTime;
+    
+    if (timeSinceLastUpdate < MINIMUM_DISPLAY_TIME && window.lastUpdateTime > 0) {
+        // Wait for minimum display time before showing next update
+        const waitTime = MINIMUM_DISPLAY_TIME - timeSinceLastUpdate;
+        console.log(`⏱️  Waiting ${waitTime}ms before next update (${(waitTime/1000).toFixed(1)}s)`);
+        setTimeout(processProgressQueue, waitTime);
+        return;
+    }
+    
+    // Get next update from queue
+    const data = window.progressUpdateQueue.shift();
+    window.isProcessingUpdate = true;
+    
+    console.log(`📺 DISPLAYING ON SCREEN: ${data.step} at ${data.progress}% (will show for ${MINIMUM_DISPLAY_TIME}ms)`);
+    
+    // Apply the update immediately
+    applyProgressUpdate(data);
+    
+    // Mark update as complete and process next
+    window.lastUpdateTime = Date.now();
+    window.isProcessingUpdate = false;
+    
+    // Process next item in queue if available
+    if (window.progressUpdateQueue.length > 0) {
+        setTimeout(processProgressQueue, MINIMUM_DISPLAY_TIME);
+    }
+}
+
+// Actually apply the progress update to the UI
+function applyProgressUpdate(data) {
+    const progressIndicator = document.getElementById('live-progress-indicator');
+    const progressPercentage = document.getElementById('live-progress-percentage');
+    const progressStatus = document.getElementById('live-progress-status');
+    const progressDetail = document.getElementById('live-progress-detail');
+    const progressBarElement = document.getElementById('live-progress-bar-element');
+    const stageIcon = document.getElementById('live-stage-icon');
+    const stageText = document.getElementById('live-stage-text');
+    
+    if (!progressIndicator || !progressPercentage) {
+        return;
+    }
+    
+    // Stop fallback animation since we're getting real updates
+    if (window.fallbackProgressInterval) {
+        clearInterval(window.fallbackProgressInterval);
+        window.fallbackProgressInterval = null;
+        console.log('   🛑 Stopped fallback animation - real WebSocket updates received');
+    }
+    if (window.progressAnimationInterval) {
+        clearTimeout(window.progressAnimationInterval);
+        window.progressAnimationInterval = null;
+    }
+    
+    // Parse progress value (handle both number and string)
+    const progress = parseInt(data.progress) || 0;
+    
+    const currentProgress = parseInt(progressBarElement?.getAttribute('aria-valuenow')) || 0;
+    
+    if (progress < currentProgress) {
+        console.warn(`   ⚠️  Ignoring backwards progress: ${progress}% < ${currentProgress}%`);
+        return; // Don't update if going backwards
+    }
+    
+    console.log(`%c✅ Progress UPDATED: ${currentProgress}% → ${progress}%`, 'background: #3e8635; color: white; font-weight: bold; padding: 3px 6px;');
+    
+    // Update progress bar width with smooth animation
+    progressIndicator.style.width = `${progress}%`;
+    
+    // Update percentage display
+    progressPercentage.textContent = `${progress}%`;
+    
+    // Update aria-valuenow for accessibility
+    if (progressBarElement) {
+        progressBarElement.setAttribute('aria-valuenow', progress);
+    }
+    
+    // Get LIVE stage-specific message
+    const stageInfo = getStageInfo(data.step, data.status, data.detail, progress);
+    console.log('%c📋 Stage Info', 'background: #0066cc; color: white; padding: 2px 6px;', stageInfo);
+    
+    // FORCE UPDATE - Update LIVE status message (main heading) with animation
+    if (progressStatus) {
+        const newStatus = stageInfo.title || data.status || 'Processing...';
+        // Add fade effect for visibility
+        progressStatus.style.opacity = '0.6';
+        setTimeout(() => {
+            progressStatus.textContent = newStatus;
+            progressStatus.style.opacity = '1';
+            progressStatus.style.transition = 'opacity 0.3s ease';
+        }, 50);
+        console.log(`%c✍️  STATUS: ${newStatus}`, 'color: #0066cc; font-weight: bold; font-size: 13px;');
+    }
+    
+    // FORCE UPDATE - Update LIVE detail message (subtitle) with animation
+    if (progressDetail) {
+        const newDetail = stageInfo.detail || data.detail || 'Analyzing your content';
+        progressDetail.style.opacity = '0.6';
+        setTimeout(() => {
+            progressDetail.textContent = newDetail;
+            progressDetail.style.opacity = '1';
+            progressDetail.style.transition = 'opacity 0.3s ease';
+        }, 50);
+        console.log(`   💬 Detail: ${newDetail}`);
+    }
+    
+    // FORCE UPDATE - Update LIVE stage display with pulse animation
+    if (stageIcon && stageText) {
+        stageIcon.className = stageInfo.icon || 'fas fa-spinner fa-pulse';
+        stageIcon.style.color = stageInfo.color || '#0066cc';
+        const newStage = stageInfo.stage || 'Processing';
+        // Add scale pulse effect
+        stageText.style.transform = 'scale(1.05)';
+        setTimeout(() => {
+            stageText.textContent = newStage;
+            stageText.style.color = stageInfo.color || '#0066cc';
+            stageText.style.transform = 'scale(1)';
+            stageText.style.transition = 'transform 0.2s ease, color 0.3s ease';
+        }, 50);
+        console.log(`   🏷️  Stage Badge: ${newStage}`);
+    }
+    
+    // FORCE GRADIENT UPDATE - Change progress bar color/gradient based on progress
+    if (progress >= 100) {
+        progressIndicator.style.background = 'linear-gradient(90deg, #3e8635, #5ba352)'; // Green
+        progressIndicator.style.boxShadow = '0 0 10px rgba(62, 134, 53, 0.5)'; // Green glow
+        console.log('🟢 Applied GREEN gradient');
+        // Clear all timers when complete
+        if (typeof clearProgressTimers === 'function') {
+            clearProgressTimers();
+        }
+    } else if (progress >= 75) {
+        progressIndicator.style.background = 'linear-gradient(90deg, #0066cc, #004499)'; // Darker blue
+        progressIndicator.style.boxShadow = '0 0 10px rgba(0, 102, 204, 0.4)'; // Blue glow
+        console.log('🔵 Applied DARK BLUE gradient');
+    } else {
+        progressIndicator.style.background = 'linear-gradient(90deg, #0088ff, #0066cc)'; // Light blue
+        progressIndicator.style.boxShadow = '0 0 10px rgba(0, 136, 255, 0.3)'; // Light blue glow
+        console.log('🔵 Applied LIGHT BLUE gradient');
+    }
+    
+    console.log(`   ✅ Live progress bar updated: ${progress}% - ${stageInfo.title}`);
+}
+
+// 🆕 Get stage-specific information for LIVE display
+function getStageInfo(step, status, detail, progress) {
+    const stageMap = {
+        'analysis_start': {
+            title: '🚀 Initializing Analysis',
+            detail: 'Setting up analysis pipeline and preparing content',
+            stage: 'Initialization',
+            icon: 'fas fa-rocket',
+            color: '#0066cc'
+        },
+        'structural_parsing': {
+            title: '📄 Parsing Document Structure',
+            detail: 'Analyzing document format and extracting content blocks',
+            stage: 'Parsing Document',
+            icon: 'fas fa-file-code',
+            color: '#0066cc'
+        },
+        'style_analysis': {
+            title: '✍️ Style Analysis Complete',
+            detail: 'Finished checking grammar, style rules, and sentence structure',
+            stage: 'Style Checked',
+            icon: 'fas fa-spell-check',
+            color: '#0066cc'
+        },
+        'compliance_check': {
+            title: '✅ Validating Compliance',
+            detail: 'Ensuring content meets modular documentation standards',
+            stage: 'Compliance Check',
+            icon: 'fas fa-shield-alt',
+            color: '#0066cc'
+        },
+        'metadata_generation': {
+            title: '🏷️ Generating Metadata',
+            detail: 'Extracting title, keywords, and taxonomy classification',
+            stage: 'Metadata Generation',
+            icon: 'fas fa-tags',
+            color: '#0066cc'
+        },
+        'metadata_start': {
+            title: '🏷️ Starting Metadata Extraction',
+            detail: 'Initializing AI-powered metadata generation',
+            stage: 'Metadata Starting',
+            icon: 'fas fa-cog fa-spin',
+            color: '#0066cc'
+        },
+        'metadata_title': {
+            title: '📝 Extracting Title',
+            detail: detail || 'Analyzing content to extract the most relevant title',
+            stage: 'Title Extraction',
+            icon: 'fas fa-heading',
+            color: '#0066cc'
+        },
+        'metadata_keywords': {
+            title: '🔑 Extracting Keywords',
+            detail: detail || 'Identifying key terms and concepts',
+            stage: 'Keyword Extraction',
+            icon: 'fas fa-key',
+            color: '#0066cc'
+        },
+        'metadata_description': {
+            title: '📋 Generating Description',
+            detail: detail || 'Creating AI-powered content summary',
+            stage: 'Description Generation',
+            icon: 'fas fa-align-left',
+            color: '#0066cc'
+        },
+        'metadata_taxonomy': {
+            title: '🏷️ Classifying Taxonomy',
+            detail: detail || 'Categorizing content using AI classification',
+            stage: 'Taxonomy Classification',
+            icon: 'fas fa-sitemap',
+            color: '#0066cc'
+        },
+        'metadata_complete': {
+            title: '🎉 Metadata Complete',
+            detail: 'Successfully generated all metadata and classifications',
+            stage: 'Metadata Generated',
+            icon: 'fas fa-check-circle',
+            color: '#3e8635'
+        },
+        'analysis_complete': {
+            title: '✨ Analysis Complete!',
+            detail: 'All checks finished - preparing your results',
+            stage: 'Complete',
+            icon: 'fas fa-check-circle',
+            color: '#3e8635'
+        }
+    };
+    
+    // Return stage info or fallback
+    return stageMap[step] || {
+        title: status || 'Processing...',
+        detail: detail || 'Analyzing your content',
+        stage: 'Processing',
+        icon: 'fas fa-spinner fa-pulse',
+        color: '#06c'
+    };
+}
+
+// Note: Old multi-stage indicator function removed - now using single live stage display
 
 // Update step indicators using PatternFly progress components
 function updateStepIndicators(currentStep, progress) {
@@ -180,6 +514,12 @@ function handleProcessComplete(data) {
             // Analysis completed
             currentAnalysis = data.data.analysis;
             const structuralBlocks = data.data.structural_blocks || null;
+            
+            // 🔧 CRITICAL FIX: Reset filters to show all issues when new analysis completes
+            if (window.SmartFilterSystem) {
+                window.SmartFilterSystem.resetFilters();
+                console.log('🔄 Filters reset for new analysis');
+            }
             
             // 🔧 FIX: Pass full data object so metadata_assistant is available
             const analysisWithMetadata = {

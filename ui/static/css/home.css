@@ -397,3 +397,65 @@
         transform: none;
     }
 }
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    .home-container {
+        background: #1F2937;
+    }
+
+    .main-question {
+        color: #F9FAFB;
+    }
+
+    .hero-subtitle {
+        color: #D1D5DB;
+    }
+
+    .option-card {
+        background: rgba(55, 65, 81, 0.8);
+        border: 1px solid rgba(75, 85, 99, 0.5);
+        box-shadow: 
+            0 8px 32px rgba(0, 0, 0, 0.3),
+            0 4px 16px rgba(0, 0, 0, 0.2);
+    }
+
+    .option-card:hover {
+        box-shadow: 
+            0 20px 40px rgba(0, 0, 0, 0.4),
+            0 8px 32px rgba(0, 0, 0, 0.3);
+        border-color: rgba(96, 165, 250, 0.5);
+    }
+
+    .option-card::before {
+        background: linear-gradient(135deg, transparent 0%, rgba(96, 165, 250, 0.1) 100%);
+    }
+
+    .card-title {
+        color: #F9FAFB;
+    }
+
+    .card-description {
+        color: #D1D5DB;
+    }
+
+    .card-action {
+        color: #60A5FA;
+    }
+
+    .option-card.coming-soon .card-title {
+        color: #E5E7EB;
+    }
+
+    .option-card.coming-soon .card-description {
+        color: #9CA3AF;
+    }
+
+    .option-card.coming-soon .card-action {
+        color: #9CA3AF;
+    }
+
+    .home-footer {
+        color: #9CA3AF;
+    }
+}

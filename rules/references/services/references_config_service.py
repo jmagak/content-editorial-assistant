@@ -98,6 +98,7 @@ class ReferencesConfigService:
         self._location_patterns = {}
         self._ibm_products = {}
         self._competitor_companies = set()
+        self._competitor_products = set()
         self._ui_elements = set()
         self._professional_titles = {}
         self._name_prefixes = set()
@@ -182,6 +183,7 @@ class ReferencesConfigService:
         """Process product patterns configuration."""
         self._ibm_products = {}
         self._competitor_companies = set()
+        self._competitor_products = set()
         self._ui_elements = set()
         
         # Load IBM products
@@ -206,6 +208,10 @@ class ReferencesConfigService:
         competitors = self._config.get('competitor_companies', {})
         major_competitors = competitors.get('major_competitors', [])
         self._competitor_companies.update(comp.lower() for comp in major_competitors)
+        
+        # Load competitor products
+        competitor_products = competitors.get('competitor_products', [])
+        self._competitor_products.update(prod.lower() for prod in competitor_products)
         
         # Load UI elements
         ui_elements = self._config.get('ui_elements', {})
@@ -323,6 +329,20 @@ class ReferencesConfigService:
         if self.config_name != 'product_patterns':
             return False
         return name.lower() in self._competitor_companies
+    
+    def is_competitor_product(self, name: str) -> bool:
+        """Check if name is a competitor product."""
+        if self.config_name != 'product_patterns':
+            return False
+        name_lower = name.lower()
+        # Check exact match
+        if name_lower in self._competitor_products:
+            return True
+        # Check if any competitor product is in the name
+        for comp_product in self._competitor_products:
+            if comp_product in name_lower or name_lower in comp_product:
+                return True
+        return False
     
     def is_ui_element(self, term: str) -> bool:
         """Check if term is a UI element."""

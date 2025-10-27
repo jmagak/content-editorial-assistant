@@ -58,7 +58,7 @@ class CrossReferenceRule(BaseRule):
             except Exception:
                 pass  # Use defaults
     
-    def analyze(self, text: str, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    def analyze(self, text: str, sentences: List[str] = None, nlp=None, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Analyze cross-references in modular documentation.
         
@@ -69,6 +69,10 @@ class CrossReferenceRule(BaseRule):
         Returns:
             List of cross-reference compliance issues
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         if not text or not text.strip():
             return []
         

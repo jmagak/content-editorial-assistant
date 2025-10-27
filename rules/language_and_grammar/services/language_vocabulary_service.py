@@ -105,6 +105,26 @@ class LanguageVocabularyService:
         """Get inclusive language terms vocabulary."""
         return self._load_yaml_file("inclusive_language_terms.yaml")
     
+    def get_abbreviations_config(self) -> Dict[str, Any]:
+        """Get abbreviations configuration vocabulary."""
+        return self._load_yaml_file("abbreviations_config.yaml")
+    
+    def get_adverbs_only_config(self) -> Dict[str, Any]:
+        """Get adverbs only configuration vocabulary."""
+        return self._load_yaml_file("adverbs_only_config.yaml")
+    
+    def get_anthropomorphism_config(self) -> Dict[str, Any]:
+        """Get anthropomorphism configuration vocabulary."""
+        return self._load_yaml_file("anthropomorphism_config.yaml")
+    
+    def get_verbs_config(self) -> Dict[str, Any]:
+        """Get verbs configuration vocabulary."""
+        return self._load_yaml_file("verbs_config.yaml")
+    
+    def get_articles_config(self) -> Dict[str, Any]:
+        """Get articles configuration vocabulary."""
+        return self._load_yaml_file("articles_config.yaml")
+    
     # === UTILITY METHODS ===
     
     def generate_morphological_variants(self, base_word: str) -> List[str]:
@@ -165,6 +185,8 @@ _plurals_service: Optional[LanguageVocabularyService] = None
 _verbs_service: Optional[LanguageVocabularyService] = None
 _anthropomorphism_service: Optional[LanguageVocabularyService] = None
 _inclusive_language_service: Optional[LanguageVocabularyService] = None
+_abbreviations_service: Optional[LanguageVocabularyService] = None
+_adverbs_only_service: Optional[LanguageVocabularyService] = None
 
 
 def get_articles_vocabulary() -> LanguageVocabularyService:
@@ -205,3 +227,19 @@ def get_inclusive_language_vocabulary() -> LanguageVocabularyService:
     if _inclusive_language_service is None:
         _inclusive_language_service = LanguageVocabularyService()
     return _inclusive_language_service
+
+
+def get_abbreviations_vocabulary() -> LanguageVocabularyService:
+    """Get the abbreviations vocabulary service instance."""
+    global _abbreviations_service
+    if _abbreviations_service is None:
+        _abbreviations_service = LanguageVocabularyService()
+    return _abbreviations_service
+
+
+def get_adverbs_only_vocabulary() -> LanguageVocabularyService:
+    """Get the adverbs only vocabulary service instance."""
+    global _adverbs_only_service
+    if _adverbs_only_service is None:
+        _adverbs_only_service = LanguageVocabularyService()
+    return _adverbs_only_service

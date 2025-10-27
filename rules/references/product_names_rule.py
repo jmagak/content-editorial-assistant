@@ -27,6 +27,10 @@ class ProductNamesRule(BaseReferencesRule):
         """
         Analyzes text for product naming violations using evidence-based approach.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp:
             return errors
@@ -93,6 +97,10 @@ class ProductNamesRule(BaseReferencesRule):
         
         # === ZERO FALSE POSITIVE GUARDS ===
         # CRITICAL: Apply rule-specific guards FIRST to eliminate common exceptions
+        
+        # NEW GUARD: Don't flag generic technical terms
+        if self._is_generic_technical_term(entity.text):
+            return 0.0
         
         first_token = list(entity)[0] if entity else None
         
@@ -201,6 +209,42 @@ class ProductNamesRule(BaseReferencesRule):
         
         return suggestions[:3]
     
+    def _is_generic_technical_term(self, product_name: str) -> bool:
+        """
+        Checks if a name is a generic, non-proprietary technical term.
+        This prevents flagging industry-standard algorithms or concepts as IBM products.
+        This list should be maintained and expanded over time.
+        """
+        generic_terms = {
+            # Networking qdiscs from the test document
+            'credit-based shaper',
+            'enhanced transmission selection',
+            'earliest txtime first',
+            'fair queue',
+            'fair queuing controlled delay',
+            'generalized random early detection',
+            'hierarchical fair service curve',
+            'hierarchy token bucket',
+            'ingress',
+            'multi queue priority',
+            'multiqueue',
+            'network emulator',
+            'random early detection',
+            'stochastic fairness queueing',
+            'time-aware priority shaper',
+            'token bucket filter',
+            
+            # Other common generic technical concepts
+            'application programming interface',
+            'representational state transfer',
+            'simple object access protocol',
+            'relational database management system',
+            'structured query language',
+            'transmission control protocol',
+            'internet protocol'
+        }
+        return product_name.lower() in generic_terms
+    
     def _is_ui_element_or_false_positive_config(self, entity, doc):
         """
         Configuration-based UI element detection using config service.
@@ -243,11 +287,15 @@ class ProductNamesRule(BaseReferencesRule):
         
         product_lower = product_name.lower()
         
-        # Check if full name is a competitor
+        # Check if this is a known competitor product (e.g., "Simple Notification Service")
+        if self.config_service.is_competitor_product(product_lower):
+            return True
+        
+        # Check if full name is a competitor company
         if self.config_service.is_competitor_company(product_lower):
             return True
         
-        # Check if any word in the product name is a competitor
+        # Check if any word in the product name is a competitor company
         words = product_lower.split()
         for word in words:
             if self.config_service.is_competitor_company(word):

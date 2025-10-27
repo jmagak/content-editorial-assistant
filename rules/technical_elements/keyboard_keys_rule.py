@@ -10,9 +10,10 @@ from .services.technical_config_service import TechnicalConfigServices, Technica
 import re
 
 try:
-    from spacy.tokens import Doc
+    from spacy.tokens import Doc, Token
 except ImportError:
     Doc = None
+    Token = None
 
 class KeyboardKeysRule(BaseTechnicalRule):
     """
@@ -42,6 +43,10 @@ class KeyboardKeysRule(BaseTechnicalRule):
         """
         PRODUCTION-GRADE: Evidence-based analysis for keyboard key violations.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -162,6 +167,13 @@ class KeyboardKeysRule(BaseTechnicalRule):
         # === GUARD 2: NON-KEYBOARD CONTEXT ===
         if self._is_non_keyboard_context(flagged_text, sentence_obj, context):
             return 0.0  # Not referring to keyboard keys
+        
+        # === GUARD 3: CHARACTER vs. KEY CONTEXT ===
+        # PRODUCTION FIX: Check if "space"/"tab" refers to character, not keyboard key
+        # Pattern: "spaces or semicolons" (characters) vs "Space key" (keyboard)
+        token = issue.get('token')
+        if token and self._is_character_not_key_context(token, doc):
+            return 0.0  # Refers to character/punctuation, not keyboard key
             
         # Apply selective technical guards (skip technical context guard for keyboard keys)
         # Keyboard key violations should be flagged even in technical contexts
@@ -222,6 +234,58 @@ class KeyboardKeysRule(BaseTechnicalRule):
             for context_phrase in non_keyboard_contexts[flagged_lower]:
                 if context_phrase in sent_text:
                     return True
+        
+        return False
+    
+    def _is_character_not_key_context(self, token: 'Token', doc) -> bool:
+        """
+        PRODUCTION FIX: Checks if a token like 'space' or 'tab' refers to the character, not the key.
+        Uses dependency parsing to detect list-like contexts with punctuation terms.
+        
+        This prevents false positives like:
+        - "Enclose values with spaces or semicolons" (characters) ✓
+        - "Press the Space key" (keyboard key) - still flagged correctly
+        
+        Scalable: Uses YAML configuration for punctuation terms, no hardcoding.
+        """
+        # Only check ambiguous terms that can be either character or key
+        token_lemma = token.lemma_.lower()
+        
+        # Load ambiguous terms from YAML
+        guard_patterns = self.config_service.get_guard_patterns()
+        character_context = guard_patterns.get('character_context_terms', {})
+        ambiguous_terms_list = character_context.get('ambiguous_terms', [])
+        ambiguous_terms = set(term.lower() for term in ambiguous_terms_list)
+        
+        if token_lemma not in ambiguous_terms:
+            return False  # Not an ambiguous term
+        
+        # Load punctuation nouns from YAML (scalable, production-ready)
+        punctuation_nouns_list = character_context.get('punctuation_nouns', [])
+        punctuation_nouns = set(noun.lower() for noun in punctuation_nouns_list)
+        
+        # === LINGUISTIC CLUE: Check for conjunction with punctuation terms ===
+        # Pattern: "spaces or semicolons", "tabs and commas", etc.
+        # If the token is conjoined with a punctuation noun, it's referring to the character
+        
+        # Check children for conjunctions
+        for child in token.children:
+            if child.dep_ == 'conj' and child.lemma_.lower() in punctuation_nouns:
+                return True  # Conjoined with punctuation term → character, not key
+        
+        # Check if this token is a conjunction of another token
+        if token.dep_ == 'conj':
+            head = token.head
+            if head.lemma_.lower() in punctuation_nouns:
+                return True  # Conjoined with punctuation term → character, not key
+        
+        # === LINGUISTIC CLUE: Check for coordination with 'cc' (coordinating conjunction) ===
+        # Pattern: "spaces OR semicolons" - look for "or", "and", etc. between tokens
+        # Check siblings for coordinating conjunctions followed by punctuation terms
+        if hasattr(token, 'head') and token.head:
+            for sibling in token.head.children:
+                if sibling != token and sibling.dep_ == 'conj' and sibling.lemma_.lower() in punctuation_nouns:
+                    return True  # Part of coordinated list with punctuation → character
         
         return False
     

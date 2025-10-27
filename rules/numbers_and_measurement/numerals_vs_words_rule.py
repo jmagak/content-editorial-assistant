@@ -23,6 +23,10 @@ class NumeralsVsWordsRule(BaseNumbersRule):
         EVIDENCE-BASED: Flag ALL inconsistent number formatting (numerals vs words).
         Following the evidence-based guide pattern for 100% effectiveness.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors

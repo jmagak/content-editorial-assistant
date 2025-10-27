@@ -110,13 +110,43 @@ competitor_companies:
 
   competitor_products:
     # These should not be flagged for missing IBM prefix
-    - "Azure"      # Microsoft
-    - "AWS"        # Amazon
-    - "GCP"        # Google
-    - "Office 365" # Microsoft
-    - "Salesforce CRM"
+    # Microsoft
+    - "Azure"
+    - "Office 365"
+    - "Microsoft 365"
+    - "Azure DevOps"
+    # Amazon/AWS
+    - "AWS"
+    - "Amazon Web Services"
+    - "EC2"
+    - "S3"
+    - "Lambda"
+    - "Simple Notification Service"
+    - "SNS"
+    - "Simple Queue Service"
+    - "SQS"
+    - "Elastic Compute Cloud"
+    - "CloudFront"
+    - "DynamoDB"
+    - "RDS"
+    - "ECS"
+    - "EKS"
+    # Google
+    - "GCP"
+    - "Google Cloud"
+    - "Google Cloud Platform"
+    - "BigQuery"
+    - "Google Kubernetes Engine"
+    - "GKE"
+    # Oracle
     - "Oracle Database"
+    - "Oracle Cloud"
+    # SAP
     - "SAP HANA"
+    - "SAP S/4HANA"
+    # Salesforce
+    - "Salesforce CRM"
+    - "Salesforce"
 
 # UI elements and technical terms (not products)
 ui_elements:

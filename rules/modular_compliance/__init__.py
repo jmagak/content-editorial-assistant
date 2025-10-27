@@ -17,6 +17,7 @@ Phase 5 Advanced Features:
 from .concept_module_rule import ConceptModuleRule
 from .procedure_module_rule import ProcedureModuleRule
 from .reference_module_rule import ReferenceModuleRule
+from .assembly_module_rule import AssemblyModuleRule
 from .modular_structure_bridge import ModularStructureBridge
 
 from .cross_reference_rule import CrossReferenceRule
@@ -28,6 +29,7 @@ __all__ = [
     'ConceptModuleRule',
     'ProcedureModuleRule', 
     'ReferenceModuleRule',
+    'AssemblyModuleRule',
     'ModularStructureBridge',
     'CrossReferenceRule',
     'TemplateComplianceRule', 

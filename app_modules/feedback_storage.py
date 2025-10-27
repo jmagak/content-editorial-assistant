@@ -24,7 +24,10 @@ class FeedbackEntry:
     error_id: str
     error_type: str
     error_message: str
-    feedback_type: str  # 'correct', 'incorrect', 'partially_correct'
+    error_text: str 
+    context_before: Optional[str]
+    context_after: Optional[str]
+    feedback_type: str
     confidence_score: float
     user_reason: Optional[str]
     timestamp: str
@@ -76,7 +79,7 @@ class FeedbackStorage:
     
     def validate_feedback_data(self, data: Dict[str, Any]) -> Tuple[bool, str]:
         """Validate feedback submission data"""
-        required_fields = ['session_id', 'error_id', 'error_type', 'error_message', 'feedback_type']
+        required_fields = ['session_id', 'error_id', 'error_type', 'error_message', 'error_text', 'feedback_type']
         
         # Check required fields
         for field in required_fields:
@@ -138,6 +141,9 @@ class FeedbackStorage:
                 error_id=feedback_data['error_id'],
                 error_type=feedback_data['error_type'],
                 error_message=feedback_data['error_message'],
+                error_text=feedback_data['error_text'],
+                context_before=feedback_data.get('context_before'),
+                context_after=feedback_data.get('context_after'),
                 feedback_type=feedback_data['feedback_type'],
                 confidence_score=feedback_data.get('confidence_score', 0.5),
                 user_reason=feedback_data.get('user_reason'),

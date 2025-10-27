@@ -36,6 +36,10 @@ class PersonalInformationRule(BaseLegalRule):
         Flags culturally-specific labels (e.g., "first name/last name", "christian name")
         with nuanced evidence using linguistic, structural, semantic, and feedback clues.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -364,7 +368,7 @@ class PersonalInformationRule(BaseLegalRule):
         # Stricter in legal/compliance/registration flows (ultra-precision adjustment)
         if content_type in {'legal', 'compliance', 'form', 'procedural'}:
             ev += 0.0  # Ultra-precision for 100% compliance
-        if content_type in {'technical', 'api'}:
+        if content_type in {'technical', 'api', 'procedure', 'procedural'}:
             ev += 0.05
         if content_type in {'marketing', 'narrative'}:
             ev -= 0.05

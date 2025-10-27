@@ -54,8 +54,18 @@ class SpacingRule(BasePunctuationRule):
         - Trailing/leading whitespace issues
         - Indentation problems
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         context = context or {}
+        
+        # === SURGICAL ZERO FALSE POSITIVE GUARD ===
+        # CRITICAL: Code blocks are exempt from prose punctuation rules
+        # Periods in code like `auth.secret.ref.name` are NOT sentence-ending punctuation!
+        if context and context.get('block_type') in ['code_block', 'literal_block', 'inline_code']:
+            return []
         
         # Fallback analysis when nlp is not available
         if not nlp:
@@ -84,9 +94,21 @@ class SpacingRule(BasePunctuationRule):
         if self._should_skip_fallback_analysis(context):
             return errors
         
+        # SURGICAL GUARD: Find all inline code regions (backticks)
+        inline_code_regions = self._find_inline_code_regions(text)
+        
         # Check for spacing violations using regex patterns
         for pattern_name, pattern in self.spacing_patterns.items():
             for match in pattern.finditer(text):
+                # SURGICAL GUARD: Skip matches inside inline code
+                if self._is_match_in_inline_code(match, inline_code_regions):
+                    continue
+                
+                # === CRITICAL FIX: FILENAME PROTECTION ===
+                # Skip matches that are part of filenames (e.g., integration-sink-aws-sns.yaml)
+                if self._is_match_in_filename(match, text):
+                    continue
+                
                 # Calculate basic evidence score
                 evidence_score = self._calculate_fallback_evidence(pattern_name, match, text, context)
                 
@@ -126,9 +148,22 @@ class SpacingRule(BasePunctuationRule):
         if self._should_skip_fallback_analysis(context):
             return errors
         
+        # SURGICAL GUARD: Find all inline code regions (backticks)
+        # These regions should be completely skipped from punctuation analysis
+        inline_code_regions = self._find_inline_code_regions(text)
+        
         # Use the same patterns as fallback analysis
         for pattern_name, pattern in self.spacing_patterns.items():
             for match in pattern.finditer(text):
+                # SURGICAL GUARD: Skip matches inside inline code
+                if self._is_match_in_inline_code(match, inline_code_regions):
+                    continue
+                
+                # === CRITICAL FIX: FILENAME PROTECTION ===
+                # Skip matches that are part of filenames (e.g., integration-sink-aws-sns.yaml)
+                if self._is_match_in_filename(match, text):
+                    continue
+                
                 # Calculate evidence score
                 evidence_score = self._calculate_fallback_evidence(pattern_name, match, text, context)
                 
@@ -141,6 +176,141 @@ class SpacingRule(BasePunctuationRule):
         
         return errors
 
+    def _find_inline_code_regions(self, text: str) -> List[tuple]:
+        """
+        Find all inline code regions (text between backticks).
+        
+        Returns a list of (start, end) tuples for each inline code region.
+        These regions should be completely excluded from punctuation analysis.
+        
+        Example: "The `auth.secret.ref.name` field..." 
+        Returns: [(4, 25)] for the backtick-enclosed region
+        """
+        regions = []
+        in_code = False
+        start = -1
+        
+        i = 0
+        while i < len(text):
+            if text[i] == '`':
+                if not in_code:
+                    # Start of inline code
+                    start = i
+                    in_code = True
+                else:
+                    # End of inline code
+                    regions.append((start, i + 1))
+                    in_code = False
+                    start = -1
+            i += 1
+        
+        return regions
+    
+    def _is_match_in_inline_code(self, match, inline_code_regions: List[tuple]) -> bool:
+        """
+        Check if a regex match falls within any inline code region.
+        
+        Args:
+            match: A regex match object
+            inline_code_regions: List of (start, end) tuples for inline code
+            
+        Returns:
+            bool: True if the match is inside inline code, False otherwise
+        """
+        match_start = match.start()
+        match_end = match.end()
+        
+        for code_start, code_end in inline_code_regions:
+            # Check if match overlaps with this code region
+            if (match_start >= code_start and match_start < code_end) or \
+               (match_end > code_start and match_end <= code_end) or \
+               (match_start <= code_start and match_end >= code_end):
+                return True
+        
+        return False
+    
+    def _is_match_in_filename(self, match, text: str) -> bool:
+        """
+        === CRITICAL FIX: FILENAME DETECTION ===
+        Check if a regex match (especially periods) is part of a filename.
+        
+        Filenames like "integration-sink-aws-sns.yaml" or "config.json" should NOT
+        be flagged for missing spaces after periods.
+        
+        Args:
+            match: A regex match object
+            text: Full text for context
+            
+        Returns:
+            bool: True if the match is part of a filename, False otherwise
+        """
+        match_start = match.start()
+        match_end = match.end()
+        
+        # Extract a reasonable context window around the match
+        # Look back and forward to find word boundaries
+        context_start = max(0, match_start - 50)
+        context_end = min(len(text), match_end + 50)
+        context = text[context_start:context_end]
+        
+        # Adjust match position relative to context
+        relative_match_start = match_start - context_start
+        
+        # === FILENAME PATTERN DETECTION ===
+        # Pattern: word characters, hyphens, underscores, followed by period and extension
+        # Examples: my-file.yaml, integration-sink-aws-sns.yaml, config.json, setup.py
+        filename_pattern = re.compile(
+            r'\b'  # Word boundary
+            r'[a-zA-Z0-9]'  # Start with alphanumeric
+            r'[a-zA-Z0-9_\-]*'  # Followed by alphanumeric, underscore, or hyphen
+            r'\.'  # Period (the potential match point)
+            r'[a-zA-Z0-9]+'  # Extension (alphanumeric)
+            r'\b'  # Word boundary
+        )
+        
+        # Find all filename matches in the context
+        for filename_match in filename_pattern.finditer(context):
+            filename_start = context_start + filename_match.start()
+            filename_end = context_start + filename_match.end()
+            
+            # Check if our spacing match falls within this filename
+            if filename_start <= match_start < filename_end:
+                return True
+        
+        # === DOT NOTATION PATTERN (auth.secret.ref.name) ===
+        # Pattern: multiple words connected by periods (property paths, namespaces)
+        dot_notation_pattern = re.compile(
+            r'\b'
+            r'[a-zA-Z_][a-zA-Z0-9_]*'  # Identifier
+            r'(?:\.[a-zA-Z_][a-zA-Z0-9_]*){2,}'  # Followed by 2+ more identifiers with periods
+            r'\b'
+        )
+        
+        for dot_match in dot_notation_pattern.finditer(context):
+            dot_start = context_start + dot_match.start()
+            dot_end = context_start + dot_match.end()
+            
+            if dot_start <= match_start < dot_end:
+                return True
+        
+        # === URL/URI PATTERN ===
+        # Pattern: URLs, file paths, etc.
+        url_pattern = re.compile(
+            r'\b'
+            r'(?:https?://|ftp://|file://|www\.|/[a-zA-Z0-9])'  # URL indicators
+            r'[^\s]+',  # Non-whitespace characters
+            re.IGNORECASE
+        )
+        
+        for url_match in url_pattern.finditer(context):
+            url_start = context_start + url_match.start()
+            url_end = context_start + url_match.end()
+            
+            if url_start <= match_start < url_end:
+                return True
+        
+        return False
+    
     def _analyze_sentence_spacing_advanced(self, sent: 'Span', sentence_idx: int, text: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Advanced spaCy-based spacing analysis for complex cases."""
         errors = []

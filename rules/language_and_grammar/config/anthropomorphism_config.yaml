@@ -1,0 +1,463 @@
+# Anthropomorphism Configuration
+# Manages thresholds, weights, and patterns for detecting inappropriate anthropomorphism
+# Used by AnthropomorphismRule for evidence-based anthropomorphism detection
+
+# Evidence thresholds
+evidence_thresholds:
+  min_threshold: 0.1
+  high_inappropriate: 0.8
+  moderate_inappropriate: 0.5
+  low_inappropriate: 0.3
+  decision_verb_minimum: 0.15
+
+# Base verb evidence scores (by verb category)
+base_verb_evidence:
+  core_cognitive: 0.9  # think, believe, feel, want, wish, hope, fear, love, hate, worry, care, know, learn
+  memory_consciousness: 0.8  # remember, forget, dream, imagine, doubt
+  communication: 0.6  # say, tell, speak, talk, ask, answer, reply
+  decision_judgment: 0.4  # decide, choose, select, determine, expect
+  perception: 0.5  # see, detect, notice, hear, observe
+  action_capability: 0.3  # allow, permit, enable, support, help, serve
+  default: 0.5
+
+# Verb categories for base evidence lookup
+verb_categories:
+  core_cognitive:
+    - 'think'
+    - 'believe'
+    - 'feel'
+    - 'want'
+    - 'wish'
+    - 'hope'
+    - 'fear'
+    - 'love'
+    - 'hate'
+    - 'worry'
+    - 'care'
+    - 'know'
+    - 'learn'
+  
+  memory_consciousness:
+    - 'remember'
+    - 'forget'
+    - 'dream'
+    - 'imagine'
+    - 'doubt'
+  
+  communication:
+    - 'say'
+    - 'tell'
+    - 'speak'
+    - 'talk'
+    - 'ask'
+    - 'answer'
+    - 'reply'
+  
+  decision_judgment:
+    - 'decide'
+    - 'choose'
+    - 'select'
+    - 'determine'
+    - 'expect'
+  
+  perception:
+    - 'see'
+    - 'detect'
+    - 'notice'
+    - 'hear'
+    - 'observe'
+  
+  action_capability:
+    - 'allow'
+    - 'permit'
+    - 'enable'
+    - 'support'
+    - 'help'
+    - 'serve'
+
+# Decision verbs that need special handling
+decision_verbs:
+  - 'decide'
+  - 'choose'
+  - 'select'
+
+# Technical subjects
+technical_subjects:
+  - 'system'
+  - 'application'
+  - 'platform'
+  - 'service'
+  - 'tool'
+  - 'component'
+  - 'module'
+  - 'library'
+  - 'framework'
+  - 'software'
+  - 'program'
+  - 'app'
+
+# Cognitive agent verbs
+cognitive_agent_verbs:
+  - 'decide'
+  - 'choose'
+  - 'determine'
+  - 'select'
+  - 'pick'
+  - 'prefer'
+  - 'judge'
+  - 'evaluate'
+  - 'consider'
+  - 'assess'
+
+# Linguistic clue weights
+linguistic_weights:
+  technical_cognitive_boost: 0.25
+  present_tense_boost: 0.1
+  past_tense_reduction: 0.1
+  present_participle_boost: 0.05
+  tense_pres_boost: 0.1
+  tense_past_reduction: 0.05
+  person_3_boost: 0.05
+  number_sing_boost: 0.03
+  voice_pass_reduction: 0.15
+  root_verb_boost: 0.05
+  complement_reduction: 0.1
+  relative_clause_reduction: 0.05
+  plural_subject_reduction: 0.1
+  proper_noun_product_reduction: 0.1
+  common_noun_boost: 0.05
+  entity_iob_b_reduction: 0.1
+  entity_iob_i_reduction: 0.05
+  propn_reduction: 0.2
+  noun_boost: 0.05
+  pron_reduction: 0.3
+  main_verb_boost: 0.05
+  aux_verb_reduction: 0.1
+  person_org_reduction: 0.8
+  product_fac_reduction: 0.2
+  person_object_boost: 0.2
+  technical_object_reduction: 0.2
+  technical_adverb_reduction: 0.3
+  humanlike_adverb_boost: 0.2
+  modal_aux_reduction: 0.1
+  conditional_aux_boost: 0.1
+
+# Structural clue weights
+structural_weights:
+  code_block_reduction: 0.9
+  inline_code_reduction: 0.7
+  table_reduction: 0.4
+  list_reduction: 0.3
+  nested_list_reduction: 0.2
+  h1_h2_reduction: 0.3
+  h3_plus_reduction: 0.2
+  note_tip_reduction: 0.3
+  warning_caution_reduction: 0.2
+
+# Semantic clue weights
+semantic_weights:
+  api_docs_reduction: 0.4
+  tech_spec_reduction: 0.3
+  ui_docs_reduction: 0.3
+  sysadmin_reduction: 0.3
+  architecture_reduction: 0.2
+  troubleshooting_reduction: 0.2
+  technical_content_reduction: 0.3
+  technical_context_reduction: 0.3
+  api_content_reduction: 0.4
+  procedural_reduction: 0.2
+  academic_boost: 0.2
+  legal_boost: 0.3
+  marketing_reduction: 0.4
+  narrative_reduction: 0.5
+  technical_domain_reduction: 0.3
+  documentation_domain_reduction: 0.2
+  technical_audience_reduction: 0.2
+  academic_audience_boost: 0.2
+  conventional_pattern_reduction: 0.4
+  problematic_pattern_boost: 0.4
+
+# Feedback clue weights
+feedback_weights:
+  accepted_pattern_reduction: 0.5
+  flagged_pattern_boost: 0.4
+  high_verb_acceptance_reduction: 0.3
+  low_verb_acceptance_boost: 0.3
+  high_subject_acceptance_reduction: 0.2
+  low_subject_acceptance_boost: 0.2
+  acceptance_thresholds:
+    high: 0.8
+    low: 0.2
+
+# POS tags for verb tense detection
+pos_tags:
+  present_tense:
+    - 'VBZ'
+    - 'VBP'
+  past_tense:
+    - 'VBD'
+    - 'VBN'
+  present_participle:
+    - 'VBG'
+  proper_nouns:
+    - 'NNP'
+    - 'NNPS'
+  common_nouns:
+    - 'NN'
+    - 'NNS'
+
+# Morphology features
+morph_features:
+  tense_present: 'Tense=Pres'
+  tense_past: 'Tense=Past'
+  person_3: 'Person=3'
+  number_sing: 'Number=Sing'
+  number_plur: 'Number=Plur'
+  voice_pass: 'Voice=Pass'
+  definite_def: 'Definite=Def'
+
+# Dependency relations
+dependency_relations:
+  subject: 'nsubj'
+  direct_object: 'dobj'
+  root: 'ROOT'
+  complement:
+    - 'xcomp'
+    - 'ccomp'
+  relative_clause:
+    - 'acl'
+    - 'relcl'
+  adverbial_modifier: 'advmod'
+  auxiliary: 'aux'
+
+# Entity types
+entity_types:
+  animate:
+    - 'PERSON'
+    - 'ORG'
+  semi_animate:
+    - 'PRODUCT'
+    - 'FAC'
+  inanimate_technical:
+    - 'NORP'
+    - 'GPE'
+
+# Entity IOB tags
+entity_iob:
+  beginning: 'B'
+  inside: 'I'
+  outside: 'O'
+
+# POS categories
+pos_categories:
+  proper_noun: 'PROPN'
+  common_noun: 'NOUN'
+  pronoun: 'PRON'
+  verb: 'VERB'
+  auxiliary: 'AUX'
+
+# Technical object lemmas
+technical_objects:
+  - 'data'
+  - 'information'
+  - 'input'
+  - 'output'
+  - 'file'
+  - 'record'
+  - 'entry'
+  - 'value'
+
+# Technical adverbs
+technical_adverbs:
+  - 'automatically'
+  - 'dynamically'
+  - 'programmatically'
+  - 'systematically'
+  - 'mechanically'
+
+# Human-like adverbs
+humanlike_adverbs:
+  - 'carefully'
+  - 'thoughtfully'
+  - 'intelligently'
+  - 'wisely'
+  - 'cleverly'
+
+# Modal auxiliaries
+modal_auxiliaries:
+  technical:
+    - 'can'
+    - 'will'
+    - 'should'
+    - 'must'
+  humanlike:
+    - 'might'
+    - 'could'
+    - 'would'
+
+# Admonition types
+admonition_types:
+  informational:
+    - 'NOTE'
+    - 'TIP'
+    - 'HINT'
+  warning:
+    - 'WARNING'
+    - 'CAUTION'
+    - 'DANGER'
+
+# Conventional technical patterns (subject, verb)
+conventional_patterns:
+  - ['api', 'expect']
+  - ['api', 'return']
+  - ['api', 'accept']
+  - ['api', 'require']
+  - ['system', 'allow']
+  - ['system', 'permit']
+  - ['system', 'support']
+  - ['application', 'detect']
+  - ['application', 'determine']
+  - ['application', 'select']
+  - ['server', 'respond']
+  - ['server', 'serve']
+  - ['server', 'listen']
+  - ['database', 'store']
+  - ['database', 'retrieve']
+  - ['database', 'contain']
+  - ['interface', 'display']
+  - ['interface', 'show']
+  - ['interface', 'present']
+  - ['function', 'return']
+  - ['function', 'accept']
+  - ['function', 'expect']
+  - ['method', 'take']
+  - ['method', 'perform']
+  - ['method', 'execute']
+
+# Problematic patterns (subject, verb)
+problematic_patterns:
+  - ['system', 'think']
+  - ['system', 'believe']
+  - ['system', 'feel']
+  - ['application', 'want']
+  - ['application', 'wish']
+  - ['application', 'hope']
+  - ['software', 'love']
+  - ['software', 'hate']
+  - ['software', 'worry']
+
+# Content type indicators
+content_indicators:
+  technical_specification:
+    indicators:
+      - 'specification'
+      - 'requirement'
+      - 'protocol'
+      - 'standard'
+      - 'implementation'
+      - 'architecture'
+      - 'design'
+      - 'interface'
+      - 'component'
+      - 'module'
+      - 'system'
+      - 'framework'
+      - 'library'
+      - 'algorithm'
+      - 'data structure'
+      - 'performance'
+      - 'scalability'
+    min_count: 3
+  
+  system_administration:
+    indicators:
+      - 'server'
+      - 'administrator'
+      - 'configuration'
+      - 'deployment'
+      - 'monitoring'
+      - 'logging'
+      - 'backup'
+      - 'security'
+      - 'firewall'
+      - 'network'
+      - 'database'
+      - 'service'
+      - 'daemon'
+      - 'process'
+      - 'install'
+      - 'configure'
+      - 'manage'
+      - 'maintain'
+      - 'troubleshoot'
+    min_count: 4
+  
+  software_architecture:
+    indicators:
+      - 'architecture'
+      - 'design'
+      - 'pattern'
+      - 'framework'
+      - 'structure'
+      - 'component'
+      - 'module'
+      - 'layer'
+      - 'tier'
+      - 'microservice'
+      - 'service'
+      - 'interface'
+      - 'dependency'
+      - 'coupling'
+      - 'cohesion'
+      - 'scalability'
+      - 'performance'
+      - 'reliability'
+      - 'maintainability'
+    min_count: 4
+  
+  troubleshooting:
+    indicators:
+      - 'troubleshoot'
+      - 'debug'
+      - 'error'
+      - 'problem'
+      - 'issue'
+      - 'fix'
+      - 'solve'
+      - 'diagnose'
+      - 'identify'
+      - 'resolve'
+      - 'workaround'
+      - 'symptom'
+      - 'cause'
+      - 'solution'
+      - 'check'
+      - 'verify'
+      - 'test'
+      - 'validate'
+      - 'investigate'
+      - 'analyze'
+      - 'examine'
+    min_count: 4
+
+# Verb alternatives for suggestions
+verb_alternatives:
+  think: 'determine, calculate, process, analyze'
+  know: 'store, contain, have, include'
+  believe: 'assume, determine, indicate, suggest'
+  want: 'require, need, expect, request'
+  see: 'detect, identify, recognize, find'
+  tell: 'inform, notify, indicate, show'
+  ask: 'prompt, request, require, expect'
+  decide: 'determine, select, choose, resolve'
+  expect: 'require, anticipate, await, need'
+  feel: 'detect, sense, measure, register'
+  remember: 'store, retain, maintain, keep'
+  forget: 'lose, discard, remove, delete'
+  hope: 'anticipate, await, expect'
+  wish: 'require, request, need'
+  love: 'prefer, favor, optimize for'
+  hate: 'reject, refuse, disallow'
+  worry: 'monitor, check, validate'
+  care: 'prioritize, focus on, handle'
+

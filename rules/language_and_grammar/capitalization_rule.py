@@ -24,9 +24,18 @@ class CapitalizationRule(BaseLanguageRule):
         Uses sophisticated linguistic analysis to distinguish genuine capitalization errors from 
         acceptable technical variations and contextual usage patterns.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp:
             return errors
+
+        # === SURGICAL ZERO FALSE POSITIVE GUARD ===
+        # CRITICAL: Code blocks are exempt from prose style rules
+        if context and context.get('block_type') in ['code_block', 'literal_block', 'inline_code']:
+            return []
 
         # Skip analysis for content that was originally inline formatted (code, emphasis, etc.)
         if context and context.get('contains_inline_formatting'):
@@ -138,6 +147,10 @@ class CapitalizationRule(BaseLanguageRule):
         # that should never be flagged as needing capitalization, even if NER model misclassifies them
         if self._is_common_technical_noun_never_capitalize(token):
             return 0.0  # This will prevent this category of error from ever appearing again
+        
+        # === ZERO FALSE POSITIVE GUARD FOR TECHNICAL COMMANDS/UI ACTIONS IN PROSE ===
+        if self._is_command_or_ui_action_in_prose(token, sentence, text, context):
+            return 0.0  # This is a command/UI action, not a proper noun
         
         # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
         evidence_score = self._apply_linguistic_clues_capitalization(evidence_score, token, sentence)
@@ -828,6 +841,139 @@ class CapitalizationRule(BaseLanguageRule):
             return False
 
     # Removed _get_cached_feedback_patterns - using base class utility
+
+    def _is_command_or_ui_action_in_prose(self, token, sentence, text: str, context: dict) -> bool:
+        """
+        Detect if a token is a technical command or UI action in procedural prose.
+        
+        This guard prevents false positives when imperative verbs (like "Commit", "Select", "Run")
+        are incorrectly flagged as needing capitalization when they're actually commands or UI actions.
+        
+        Args:
+            token: SpaCy token to check
+            sentence: SpaCy sentence span containing the token
+            text: Full document text
+            context: Document context dictionary
+            
+        Returns:
+            bool: True if this is a command/UI action (should NOT be flagged for capitalization)
+        """
+        if not token or not hasattr(token, 'text'):
+            return False
+        
+        token_lower = token.text.lower()
+        
+        # === GUARD 1: Known Command/UI Action Verbs ===
+        # Common command verbs from Git, CLI tools, and UI actions
+        command_ui_verbs = {
+            # Git commands
+            'commit', 'push', 'pull', 'clone', 'fetch', 'merge', 'rebase', 'checkout',
+            'branch', 'tag', 'stash', 'reset', 'revert', 'cherry-pick',
+            # CLI commands
+            'run', 'execute', 'install', 'configure', 'deploy', 'build', 'test',
+            'start', 'stop', 'restart', 'enable', 'disable', 'update', 'upgrade',
+            # UI actions
+            'select', 'click', 'choose', 'pick', 'open', 'close', 'save', 'delete',
+            'edit', 'modify', 'change', 'add', 'remove', 'create', 'rename',
+            # File operations
+            'copy', 'move', 'paste', 'cut', 'download', 'upload', 'import', 'export',
+            # Database/SQL operations
+            'insert', 'query', 'search', 'find', 'filter', 'sort', 'group'
+        }
+        
+        if token_lower not in command_ui_verbs:
+            return False  # Not a known command/UI verb
+        
+        # === GUARD 2: Must be a Verb ===
+        # Token should be tagged as a verb to avoid false matches with nouns
+        if not hasattr(token, 'pos_') or token.pos_ not in ['VERB']:
+            return False
+        
+        # === GUARD 3: Procedural Context Indicators ===
+        # Check if token is in a procedural/instructional context
+        
+        # 3a. Structural context (from parser)
+        if context:
+            block_type = context.get('block_type', '')
+            content_type = context.get('content_type', '')
+            
+            # Ordered lists often contain procedures
+            if block_type in ['ordered_list_item', 'unordered_list_item', 'list_item']:
+                return True
+            
+            # Procedural content type
+            if content_type in ['procedural', 'tutorial', 'howto', 'guide']:
+                return True
+        
+        # 3b. Linguistic markers in sentence
+        sentence_text = sentence.text.lower() if hasattr(sentence, 'text') else ''
+        
+        # Check for command/UI linguistic markers
+        command_markers = [
+            'the command', 'command line', 'run the', 'execute the', 
+            'use the', 'type the', 'enter the', 'the file', 'directory',
+            'the script', 'the tool', 'the utility', 'cli'
+        ]
+        
+        ui_markers = [
+            'the button', 'the menu', 'the option', 'the checkbox', 'the field',
+            'the dialog', 'the window', 'the panel', 'the tab', 'the link',
+            'from the', 'in the', 'click', 'select', 'choose'
+        ]
+        
+        file_path_markers = [
+            '/', '\\\\', '.yaml', '.json', '.xml', '.conf', '.sh', '.py', '.js',
+            'template.', 'config.', 'file.', '.txt', '.md', '.adoc'
+        ]
+        
+        # Check for any markers in the sentence
+        all_markers = command_markers + ui_markers
+        if any(marker in sentence_text for marker in all_markers):
+            return True
+        
+        # Check for file path separators or extensions (strong technical context)
+        if any(marker in sentence_text for marker in file_path_markers):
+            return True
+        
+        # 3c. Check if token is at sentence start (imperative mood indicator)
+        # Imperative verbs at sentence start in procedural text are commands
+        if token.is_sent_start:
+            # Look for signs this is a procedural instruction
+            # Check if sentence contains "your", "the", or other instruction indicators
+            instruction_indicators = ['your', 'the', 'to', 'and', 'then', 'next']
+            if any(word.lower() in instruction_indicators for word in sentence_text.split()[:10]):
+                return True
+        
+        # 3d. Check for coordinated command verbs (e.g., "Commit and push")
+        # If token is in a conjunction with another command verb
+        if hasattr(token, 'head'):
+            for child in token.head.children:
+                if child.dep_ == 'conj' and child.text.lower() in command_ui_verbs:
+                    return True
+            for child in token.children:
+                if child.dep_ == 'conj' and child.text.lower() in command_ui_verbs:
+                    return True
+        
+        # === GUARD 4: Near Path Separators or Technical Identifiers ===
+        # Check if token is near path separators (strong technical context)
+        # Look at surrounding tokens (within 5 words)
+        if hasattr(token, 'i') and hasattr(sentence, '__getitem__'):
+            start_idx = max(0, token.i - sentence.start - 5)
+            end_idx = min(len(sentence), token.i - sentence.start + 6)
+            
+            for i in range(start_idx, end_idx):
+                if i < len(sentence):
+                    nearby_token = sentence[i]
+                    if hasattr(nearby_token, 'text'):
+                        # Check for path separators or technical patterns
+                        if ('/' in nearby_token.text or 
+                            '\\\\' in nearby_token.text or
+                            nearby_token.text.startswith('.') or
+                            '->' in nearby_token.text or
+                            '=>' in nearby_token.text):
+                            return True
+        
+        return False
 
     # === HELPER METHODS FOR SMART MESSAGING ===
 

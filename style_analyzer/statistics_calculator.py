@@ -9,18 +9,20 @@ import re
 from typing import List, Dict, Any, Optional
 from collections import Counter
 
-try:
-    import textstat
-    TEXTSTAT_AVAILABLE = True
-except ImportError:
-    TEXTSTAT_AVAILABLE = False
-
 from .base_types import (
     StatisticsDict, TechnicalMetricsDict, DEFAULT_RULES,
     safe_textstat_call, safe_float_conversion
 )
 
 logger = logging.getLogger(__name__)
+
+def _get_textstat():
+    """Lazy import textstat after main.py configures NLTK."""
+    try:
+        import textstat
+        return textstat
+    except ImportError:
+        return None
 
 
 class StatisticsCalculator:
@@ -98,7 +100,8 @@ class StatisticsCalculator:
             stats.update(word_stats)
             
             # Add readability metrics if textstat is available
-            if TEXTSTAT_AVAILABLE:
+            textstat = _get_textstat()
+            if textstat:
                 readability_stats = self._calculate_readability_statistics(text)
                 stats.update(readability_stats)
                 
@@ -125,7 +128,8 @@ class StatisticsCalculator:
             
         try:
             # Only calculate for substantial text
-            if len(text) > 50 and TEXTSTAT_AVAILABLE:
+            textstat = _get_textstat()
+            if len(text) > 50 and textstat:
                 metrics['readability_score'] = safe_textstat_call(
                     getattr(textstat, 'flesch_reading_ease', lambda x: 0), text
                 )
@@ -158,7 +162,8 @@ class StatisticsCalculator:
             
         try:
             # Add detailed readability metrics
-            if TEXTSTAT_AVAILABLE:
+            textstat = _get_textstat()
+            if textstat:
                 readability_metrics = self._calculate_detailed_readability_metrics(text)
                 metrics.update(readability_metrics)
                 
@@ -269,7 +274,8 @@ class StatisticsCalculator:
             'dale_chall_readability': 0.0
         }
         
-        if not TEXTSTAT_AVAILABLE or not text.strip():
+        textstat = _get_textstat()
+        if not textstat or not text.strip():
             return stats
             
         try:
@@ -321,6 +327,9 @@ class StatisticsCalculator:
         }
         
         try:
+            textstat = _get_textstat()
+            if not textstat:
+                return metrics
             flesch_score = safe_textstat_call(getattr(textstat, 'flesch_reading_ease', lambda x: 0), text)
             
             # Categorize readability
@@ -353,6 +362,9 @@ class StatisticsCalculator:
         }
         
         try:
+            textstat = _get_textstat()
+            if not textstat:
+                return analysis
             # Use flesch_kincaid_grade for numeric grade level instead of text_standard
             grade_level = safe_textstat_call(
                 getattr(textstat, 'flesch_kincaid_grade', lambda x: 0), text

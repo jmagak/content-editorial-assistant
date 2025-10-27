@@ -129,6 +129,10 @@ class BaseWordUsageRule(BaseRule):
         Analyzes the text for specific word usage violations.
         This method must be implemented by all subclasses.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         raise NotImplementedError("Subclasses must implement the analyze method.")
 
     def _find_multi_word_phrases_with_lemma(self, doc, phrase_list: List[str], case_sensitive: bool = False) -> List[Dict[str, Any]]:
@@ -381,35 +385,86 @@ class BaseWordUsageRule(BaseRule):
     
     def _is_in_quoted_context_words(self, token, context: Dict[str, Any]) -> bool:
         """
-        Surgical check: Is the word actually within quotation marks?
+        WORLD-CLASS: Surgical check for quoted content and examples.
+        
+        Detects:
+        - Text within backticks (`example`)
+        - Text within single quotes ('example')
+        - Text within double quotes ("example")
+        - Literal blocks containing examples (via context)
+        
         Only returns True for genuine quoted content, not incidental apostrophes.
         """
-        if not hasattr(token, 'doc') or not token.doc:
+        # === GUARD 1: LITERAL BLOCKS (from AsciiDoc parser context) ===
+        # Check if the context explicitly indicates this is a literal block
+        if context.get('block_type') == 'literal':
+            return True
+        
+        if not hasattr(token, 'doc') or not token.doc or not hasattr(token, 'sent'):
             return False
             
-        # Look for actual quotation marks around the token
+        # === GUARD 2: BACKTICK-ENCLOSED CONTENT (inline code/examples) ===
+        # Use character-level detection for backticks around the token
+        sent_text = token.sent.text
+        token_start_in_sent = token.idx - token.sent.start_char
+        token_end_in_sent = token_start_in_sent + len(token.text)
+        
+        # Search for backticks enclosing the token
+        left_backtick = sent_text.rfind('`', 0, token_start_in_sent)
+        right_backtick = sent_text.find('`', token_end_in_sent)
+        if left_backtick != -1 and right_backtick != -1:
+            return True  # Token is inside backticks, likely an example
+        
+        # === GUARD 3: SINGLE QUOTE-ENCLOSED CONTENT ===
+        # Search for single quotes enclosing the token
+        left_single_quote = sent_text.rfind("'", 0, token_start_in_sent)
+        right_single_quote = sent_text.find("'", token_end_in_sent)
+        if left_single_quote != -1 and right_single_quote != -1:
+            # Ensure it's not a possessive apostrophe or contraction
+            # by checking the quote is separated from the token by space
+            if left_single_quote < token_start_in_sent - 1 and right_single_quote > token_end_in_sent:
+                return True  # Token is inside single quotes
+        
+        # === GUARD 4: DOUBLE QUOTE-ENCLOSED CONTENT ===
+        # Use token-level detection for quotation marks
         sent = token.sent
         token_idx = token.i - sent.start
         
         # Check for quotation marks in reasonable proximity
-        quote_chars = ['"', '"', '"', "'", "'", '`']
+        quote_chars = ['"', '"', '"']  # Various quote types
         
         # Look backwards and forwards for quote pairs
         before_quotes = 0
         after_quotes = 0
         
-        # Search backwards
-        for i in range(max(0, token_idx - 10), token_idx):
+        # Search backwards (up to 20 tokens)
+        for i in range(max(0, token_idx - 20), token_idx):
             if i < len(sent) and sent[i].text in quote_chars:
                 before_quotes += 1
                 
-        # Search forwards  
-        for i in range(token_idx + 1, min(len(sent), token_idx + 10)):
+        # Search forwards (up to 20 tokens)
+        for i in range(token_idx + 1, min(len(sent), token_idx + 20)):
             if i < len(sent) and sent[i].text in quote_chars:
                 after_quotes += 1
         
         # If we have quotes both before and after, likely quoted content
-        return before_quotes > 0 and after_quotes > 0
+        if before_quotes > 0 and after_quotes > 0:
+            return True
+        
+        # === GUARD 5: EXAMPLE INDICATORS ===
+        # Check if sentence contains example indicators
+        sent_text_lower = sent_text.lower()
+        example_indicators = ['such as', 'for example', 'e.g.', 'like', 'example:']
+        
+        if any(indicator in sent_text_lower for indicator in example_indicators):
+            # Check if token appears after the example indicator
+            for indicator in example_indicators:
+                indicator_pos = sent_text_lower.find(indicator)
+                if indicator_pos != -1 and indicator_pos < token_start_in_sent:
+                    # Token appears after example indicator, likely part of example
+                    return True
+        
+        return False
     
     def _is_technical_specification_words(self, token, context: Dict[str, Any]) -> bool:
         """

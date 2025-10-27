@@ -71,11 +71,21 @@ class StructuralAnalyzer:
             nlp
         )
 
-    def analyze_with_blocks(self, text: str, format_hint: str, analysis_mode: AnalysisMode) -> Dict[str, Any]:
+    def analyze_with_blocks(self, text: str, format_hint: str, analysis_mode: AnalysisMode, content_type: str = None) -> Dict[str, Any]:
         """
         Parses a document, enriches blocks with structural context, runs analysis,
         and returns a structured result for the UI.
+        
+        Args:
+            text: The document text to analyze
+            format_hint: Format hint for the parser
+            analysis_mode: The analysis mode to use
+            content_type: User-selected content type (concept/procedure/reference) from UI
         """
+        # CRITICAL: Extract content type from file FIRST (file takes precedence)
+        file_content_type = self._extract_content_type_from_file(text)
+        final_content_type = file_content_type if file_content_type else content_type
+        
         parse_result = self.parser_factory.parse(text, format_hint=format_hint)
 
         if not parse_result.success or not parse_result.document:
@@ -104,6 +114,13 @@ class StructuralAnalyzer:
         for block in flat_blocks:
             context = getattr(block, 'context_info', block.get_context_info())
             
+            # CRITICAL: Always use final_content_type (file wins over user selection)
+            # Override even if context has lowercase value (from user), unless uppercase (from file)
+            existing_type = context.get('content_type')
+            if final_content_type:
+                if not existing_type or (isinstance(existing_type, str) and existing_type.islower()):
+                    context['content_type'] = final_content_type
+            
             if not block.should_skip_analysis():
                 content = block.get_text_content()
                 
@@ -129,6 +146,12 @@ class StructuralAnalyzer:
                     
                     block._analysis_errors = errors
                     all_errors.extend(errors)
+            
+            # **NEW**: For table blocks, recursively analyze nested content (cells, lists, notes, etc.)
+            # This ensures nested blocks are analyzed but not flattened as separate blocks
+            if hasattr(block, 'block_type') and str(block.block_type).endswith('TABLE'):
+                nested_errors = self._analyze_table_nested_content(block, analysis_mode)
+                all_errors.extend(nested_errors)
         
         # Track total validation time
         total_validation_time = time.time() - validation_start_time
@@ -194,6 +217,20 @@ class StructuralAnalyzer:
             'has_structure': True
         }
 
+    def _extract_content_type_from_file(self, text: str) -> Optional[str]:
+        """Extract content type from file attribute (file takes precedence over user selection)."""
+        import re
+        
+        match = re.search(r':_mod-docs-content-type:\s*(CONCEPT|PROCEDURE|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+        
+        match = re.search(r':_content-type:\s*(CONCEPT|PROCEDURE|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+        
+        return None
+    
     def _flatten_tree_only(self, processor, root_node):
         """Uses the BlockProcessor's flattening logic without running analysis."""
         processor.flat_blocks = []
@@ -322,3 +359,42 @@ class StructuralAnalyzer:
             'confidence_threshold': self.confidence_threshold,
             'validation_performance': self._get_validation_performance_summary()
         }
+    
+    def _analyze_table_nested_content(self, table_block: Any, analysis_mode: AnalysisMode) -> List[Dict[str, Any]]:
+        """
+        Recursively analyze nested content within table cells (lists, notes, paragraphs).
+        This ensures nested blocks are analyzed without being added as separate blocks in the UI.
+        """
+        all_nested_errors = []
+        
+        def analyze_block_recursively(block):
+            """Recursively analyze a block and its children."""
+            errors = []
+            
+            # Analyze the block itself if it has content
+            if not block.should_skip_analysis():
+                content = block.get_text_content()
+                if isinstance(content, str) and content.strip():
+                    context = block.get_context_info()
+                    block_errors = self.mode_executor.analyze_block_content(block, content, analysis_mode, context)
+                    block._analysis_errors = block_errors
+                    errors.extend(block_errors)
+            
+            # Recursively analyze children
+            if hasattr(block, 'children'):
+                for child in block.children:
+                    child_errors = analyze_block_recursively(child)
+                    errors.extend(child_errors)
+            
+            return errors
+        
+        # Process all rows and cells
+        if hasattr(table_block, 'children'):
+            for row in table_block.children:
+                if hasattr(row, 'children'):
+                    for cell in row.children:
+                        # Analyze the cell and all its nested content
+                        cell_errors = analyze_block_recursively(cell)
+                        all_nested_errors.extend(cell_errors)
+        
+        return all_nested_errors

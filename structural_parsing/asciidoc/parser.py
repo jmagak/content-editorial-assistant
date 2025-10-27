@@ -21,31 +21,62 @@ class AsciiDocParser:
         self.enable_smart_block_splitting = True
 
     def parse(self, content: str, filename: str = "") -> ParseResult:
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] parse() called")
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] content length: {len(content)}")
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] content preview: {content[:200]}")
+        
         if not self.asciidoctor_available:
+            logger.error(f"❌ [ASCIIDOC-PARSER-DEBUG] Asciidoctor not available")
             return ParseResult(success=False, errors=["Asciidoctor Ruby gem is not available."])
 
         # Correctly calls the 'run' method in the updated client
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] Calling ruby_client.run()...")
         result = self.ruby_client.run(content, filename)
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] ruby_client.run() returned: success={result.get('success')}")
 
         if not result.get('success'):
+            logger.error(f"❌ [ASCIIDOC-PARSER-DEBUG] Ruby client failed: {result.get('error')}")
             return ParseResult(success=False, errors=[result.get('error', 'Unknown Ruby error')])
 
         json_ast = result.get('data', {})
         if not json_ast:
+            logger.error(f"❌ [ASCIIDOC-PARSER-DEBUG] Parser returned empty document")
             return ParseResult(success=False, errors=["Parser returned empty document."])
+        
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] json_ast keys: {list(json_ast.keys())}")
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] json_ast context: {json_ast.get('context')}")
+        logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] json_ast children count: {len(json_ast.get('children', []))}")
 
         try:
+            logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] Building block structure from AST...")
             document_node = self._build_block_from_ast(json_ast, filename=filename)
+            logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] document_node type: {type(document_node)}")
+            
             if isinstance(document_node, AsciiDocDocument):
+                logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] Document blocks count: {len(document_node.blocks)}")
+                if document_node.blocks:
+                    logger.info(f"🔍 [ASCIIDOC-PARSER-DEBUG] First 3 block types: {[b.block_type for b in document_node.blocks[:3]]}")
+                else:
+                    logger.warning(f"⚠️ [ASCIIDOC-PARSER-DEBUG] Document has 0 blocks!")
+                
                 # Apply smart block splitting for better user experience
                 if self.enable_smart_block_splitting:
                     self._apply_smart_block_splitting(document_node)
                 # Fix misidentified admonition blocks that were parsed as definition lists
                 self._fix_misidentified_admonitions(document_node)
+                # Fix block titles that were merged into lists due to missing blank lines
+                self._fix_merged_block_titles(document_node)
+                # Promote list titles to proper sections for better structural clarity
+                self._promote_list_titles_to_sections(document_node)
+                
+                logger.info(f"✅ [ASCIIDOC-PARSER-DEBUG] After splitting/fixing: {len(document_node.blocks)} blocks")
+                
                 return ParseResult(document=document_node, success=True)
+            
+            logger.error(f"❌ [ASCIIDOC-PARSER-DEBUG] AST root was not a document, got: {type(document_node)}")
             return ParseResult(success=False, errors=["AST root was not a document."])
         except Exception as e:
-            logger.exception("Failed to build block structure from AsciiDoc AST.")
+            logger.exception("❌ [ASCIIDOC-PARSER-DEBUG] Failed to build block structure from AsciiDoc AST.")
             return ParseResult(success=False, errors=[f"Failed to process AST: {e}"])
 
     def _build_block_from_ast(self, node: Dict[str, Any], parent: Optional[AsciiDocBlock] = None, filename: str = "") -> AsciiDocBlock:
@@ -116,7 +147,13 @@ class AsciiDocParser:
         if context == 'section': return node.get('title', '')
         if context in ['listing', 'literal']: return node.get('source', '')
         
-        if context == 'table_cell': return node.get('text', '') or node.get('source', '')
+        # **FIX**: For table cells, if they have nested blocks (children), let those be analyzed.
+        # The cell itself should have empty content so we don't double-analyze.
+        # Only use text content if there are no nested blocks.
+        if context == 'table_cell':
+            if node.get('children') and len(node.get('children', [])) > 0:
+                return ''  # Content will be in children (lists, notes, paragraphs)
+            return node.get('text', '') or node.get('source', '')
 
         # **FIX**: For dlist containers, the content is built from its children by the UI.
         # It has no direct content itself.
@@ -477,3 +514,307 @@ class AsciiDocParser:
                 item.children = cleaned_children
         
         return extracted_admonitions
+    
+    def _fix_merged_block_titles(self, document: 'AsciiDocDocument') -> None:
+        """
+        Fix cases where block titles (lines starting with .) are merged into list items
+        due to missing blank lines. This is a common issue when users don't leave blank
+        lines between list items and subsequent block titles like .Procedure, .Additional resources, etc.
+        
+        For example:
+        * List item text
+        .Procedure
+        
+        1. Step one
+        
+        Without a blank line, Asciidoctor may nest the .Procedure and subsequent content
+        as children of the list item. This method detects and fixes such cases.
+        """
+        def process_blocks_recursively(blocks: List['AsciiDocBlock']) -> List['AsciiDocBlock']:
+            new_blocks = []
+            
+            for block in blocks:
+                # Process children recursively first
+                if block.children:
+                    block.children = process_blocks_recursively(block.children)
+                
+                # Check if this is a list block with items that need splitting
+                if block.block_type in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST]:
+                    # Check each list item for embedded block titles
+                    fixed_items = []
+                    extracted_blocks = []
+                    
+                    for item in block.children:
+                        if item.block_type == AsciiDocBlockType.LIST_ITEM:
+                            # Check if this item has child lists that might be misplaced
+                            if self._item_has_misplaced_content(item):
+                                # Split the item and extract the misplaced content
+                                split_result = self._split_list_item_with_block_title(item, block)
+                                fixed_items.extend(split_result['items'])
+                                extracted_blocks.extend(split_result['extracted'])
+                            else:
+                                fixed_items.append(item)
+                        else:
+                            fixed_items.append(item)
+                    
+                    # Update the list with fixed items
+                    block.children = fixed_items
+                    
+                    # Add the fixed list block
+                    new_blocks.append(block)
+                    
+                    # Add any extracted blocks after the list
+                    new_blocks.extend(extracted_blocks)
+                else:
+                    new_blocks.append(block)
+            
+            return new_blocks
+        
+        # Apply the fixing to the document blocks
+        document.blocks = process_blocks_recursively(document.blocks)
+    
+    def _item_has_misplaced_content(self, item: 'AsciiDocBlock') -> bool:
+        """
+        Check if a list item has content that suggests a block title was merged into it.
+        This typically happens when:
+        1. The item has child lists (which should probably be siblings)
+        2. The raw content contains lines starting with '.' (block titles)
+        """
+        # Check if item has child lists - this is suspicious for a simple list item
+        if item.children:
+            for child in item.children:
+                if child.block_type in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST]:
+                    # This item has a nested list, which might be from a merged block title
+                    return True
+        
+        return False
+    
+    def _split_list_item_with_block_title(self, item: 'AsciiDocBlock', parent_list: 'AsciiDocBlock') -> dict:
+        """
+        Split a list item that has misplaced content (likely due to a merged block title).
+        
+        Returns:
+            dict with 'items' (list items to keep) and 'extracted' (new blocks to add after the list)
+        """
+        result = {
+            'items': [],  # List items that belong in the original list
+            'extracted': []  # Blocks that should come after the list
+        }
+        
+        # Check if this item has child lists
+        has_child_lists = any(
+            child.block_type in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST]
+            for child in item.children
+        )
+        
+        if not has_child_lists:
+            # No issue detected, keep the item as-is
+            result['items'].append(item)
+            return result
+        
+        # Extract block title from the list item's content
+        extracted_title = None
+        cleaned_content = item.content
+        cleaned_raw_content = item.raw_content
+        
+        # Check both content and raw_content for block titles
+        for content_field in [item.content, item.raw_content]:
+            if not content_field:
+                continue
+                
+            lines = content_field.split('\n')
+            cleaned_lines = []
+            
+            for line in lines:
+                line_stripped = line.strip()
+                # Check if this line is a block title (starts with . but not .. or .<digit>)
+                if (line_stripped.startswith('.') and 
+                    not line_stripped.startswith('..') and 
+                    len(line_stripped) > 1):
+                    
+                    # Check if the character after . is not a digit (to avoid list markers like ". item")
+                    char_after_dot = line_stripped[1]
+                    if not char_after_dot.isdigit() and char_after_dot != ' ':
+                        # This is a block title
+                        potential_title = line_stripped[1:].strip()  # Remove leading .
+                        if potential_title:
+                            extracted_title = potential_title
+                            # Don't add this line to cleaned content
+                            continue
+                
+                cleaned_lines.append(line)
+            
+            # Update cleaned content only if we found a title
+            if extracted_title:
+                if content_field == item.content:
+                    cleaned_content = '\n'.join(cleaned_lines).strip()
+                else:
+                    cleaned_raw_content = '\n'.join(cleaned_lines).strip()
+        
+        # Create a cleaned list item without the block title line
+        cleaned_item = AsciiDocBlock(
+            block_type=item.block_type,
+            content=cleaned_content,
+            raw_content=cleaned_raw_content,
+            start_line=item.start_line,
+            end_line=item.end_line,
+            start_pos=item.start_pos,
+            end_pos=item.end_pos,
+            level=item.level,
+            title=item.title,
+            style=item.style,
+            list_marker=item.list_marker,
+            source_location=item.source_location,
+            parent=item.parent,
+            attributes=item.attributes
+        )
+        
+        # Keep only non-list children (like paragraphs)
+        cleaned_item.children = [
+            child for child in item.children
+            if child.block_type not in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST]
+        ]
+        
+        result['items'].append(cleaned_item)
+        
+        # Extract child lists as separate blocks after the parent list
+        for child in item.children:
+            if child.block_type in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST]:
+                # Update parent reference
+                child.parent = parent_list.parent
+                
+                # Apply the extracted title if we found one
+                if extracted_title:
+                    child.title = extracted_title
+                
+                result['extracted'].append(child)
+        
+        return result
+    
+    def _promote_list_titles_to_sections(self, document: 'AsciiDocDocument') -> None:
+        """
+        Promote lists with common section-like titles (Prerequisites, Procedure, etc.) 
+        to proper heading + list structure. This handles cases where block titles 
+        immediately follow list items without blank lines.
+        
+        For example, when the source has:
+            * Last item in Prerequisites
+            .Procedure
+            . First procedure step
+        
+        Asciidoctor treats .Procedure as a title for the ordered list, which is valid
+        but creates structural ambiguity. This method converts such patterns into:
+            HEADING: Prerequisites
+                LIST: (items)
+            HEADING: Procedure  
+                LIST: (items)
+        
+        This makes the structure clearer and works with or without blank lines.
+        """
+        # Common section-like titles that should be promoted to headings
+        SECTION_LIKE_TITLES = {
+            'prerequisites', 'procedure', 'verification', 'next steps',
+            'additional resources', 'related information', 'examples',
+            'troubleshooting', 'known issues', 'limitations', 'notes',
+            'important', 'before you begin', 'requirements', 'steps'
+        }
+        
+        new_blocks = []
+        i = 0
+        
+        while i < len(document.blocks):
+            block = document.blocks[i]
+            
+            # Check if this is a list with a section-like title
+            if (block.block_type in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST] and
+                block.title and
+                block.title.lower() in SECTION_LIKE_TITLES):
+                
+                # Check if previous block is also a titled list (no blank line scenario)
+                # Use new_blocks (already processed) instead of document.blocks
+                is_consecutive_titled_list = (
+                    len(new_blocks) > 0 and
+                    new_blocks[-1].block_type in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST] and
+                    new_blocks[-1].title and
+                    new_blocks[-1].title.lower() in SECTION_LIKE_TITLES
+                )
+                
+                # Check if we should promote based on already-processed blocks
+                should_promote = (
+                    i == 0 or 
+                    is_consecutive_titled_list or 
+                    self._should_promote_to_section_based_on_processed(block, new_blocks)
+                )
+                
+                # If this is the first titled list OR follows another titled list,
+                # promote it to a heading + list structure
+                if should_promote:
+                    # Create a heading block for the title
+                    heading_block = AsciiDocBlock(
+                        block_type=AsciiDocBlockType.HEADING,
+                        content=block.title,
+                        raw_content=f".{block.title}",
+                        start_line=block.start_line - 1,  # Title is on the line before the list
+                        end_line=block.start_line - 1,
+                        start_pos=0,
+                        end_pos=len(block.title) + 1,
+                        level=2,  # Level 2 heading (== or .Title)
+                        title=block.title,
+                        source_location=block.source_location,
+                        attributes=block.attributes,
+                        parent=document
+                    )
+                    
+                    # Remove the title from the list block
+                    list_block = block
+                    list_block.title = None
+                    
+                    # Add both blocks
+                    new_blocks.append(heading_block)
+                    new_blocks.append(list_block)
+                else:
+                    # Keep the block as-is (with title)
+                    new_blocks.append(block)
+            else:
+                # Regular block, keep as-is
+                new_blocks.append(block)
+            
+            i += 1
+        
+        # Replace document blocks with the promoted structure
+        document.blocks = new_blocks
+        # Update children reference for compatibility
+        document.children = new_blocks
+    
+    def _should_promote_to_section_based_on_processed(self, block: 'AsciiDocBlock', processed_blocks: List['AsciiDocBlock']) -> bool:
+        """
+        Determine if a titled list should be promoted to a section heading based on
+        already-processed blocks.
+        
+        Heuristics:
+        1. If there's no previous block (first block)
+        2. If previous block is a paragraph (intro text before a section)
+        3. If previous block is a list (either titled or not - indicates section sequence)
+        4. If previous is a heading (section after section)
+        """
+        # If no previous blocks, promote
+        if not processed_blocks:
+            return True
+        
+        prev_block = processed_blocks[-1]
+        
+        # If previous is a paragraph, this starts a new section
+        if prev_block.block_type == AsciiDocBlockType.PARAGRAPH:
+            return True
+        
+        # If previous is ANY list (titled or not), promote for consistency
+        # This handles the case where the previous list was already promoted
+        if prev_block.block_type in [AsciiDocBlockType.UNORDERED_LIST, AsciiDocBlockType.ORDERED_LIST]:
+            return True
+        
+        # If previous is a heading, this is another section
+        if prev_block.block_type == AsciiDocBlockType.HEADING:
+            return True
+        
+        # Default: don't promote
+        return False

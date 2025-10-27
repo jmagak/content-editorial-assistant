@@ -40,6 +40,10 @@ class UnitsOfMeasurementRule(BaseNumbersRule):
         3. Apply zero false positive guards specific to unit analysis
         4. Use evidence-aware messaging and suggestions
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors

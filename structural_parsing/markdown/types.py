@@ -60,6 +60,11 @@ class MarkdownBlock:
         if not content:
             return ""
         
+        # **CRITICAL FIX**: Decode HTML entities FIRST before any other processing
+        # This prevents issues where &#8217; (apostrophe) is seen as "8217" by rules
+        import html
+        content = html.unescape(content)
+        
         # Strip HTML inline formatting that comes from Markdown conversion
         # Remove <code>...</code> tags
         content = re.sub(r'<code>(.*?)</code>', r'\1', content)

@@ -30,6 +30,10 @@ class GlossariesRule(BaseStructureRule):
         Analyzes glossaries for formatting violations using evidence-based scoring.
         Each potential violation gets nuanced evidence assessment for precision.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp or not context or not context.get('is_glossary', False):
             return errors

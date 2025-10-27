@@ -13,6 +13,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Enhanced drag and drop functionality
     if (uploadArea && fileInput) {
+        console.log('✅ [INIT] Setting up drag/drop and file upload handlers');
+        
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadArea.classList.add('drag-over');
@@ -30,27 +32,53 @@ document.addEventListener('DOMContentLoaded', function() {
             uploadArea.classList.remove('drag-over');
             const files = e.dataTransfer.files;
             if (files.length > 0) {
+                console.log('📁 [INIT] File dropped:', files[0].name);
                 processFileUpload(files[0]);
             }
         });
 
+        // Click handler for upload area (to trigger file browser)
         uploadArea.addEventListener('click', (e) => {
-            if (e.target === uploadArea || uploadArea.contains(e.target)) {
-                fileInput.click();
+            // Don't interfere with the "browse files" link
+            if (e.target.classList && e.target.classList.contains('upload-link')) {
+                return;
             }
+            console.log('📁 [INIT] Upload area clicked, opening file browser');
+            fileInput.click();
         });
 
+        // Single unified file input change handler
         fileInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
+                console.log('📁 [INIT] File selected:', e.target.files[0].name);
+                
+                // Clear text input when file is selected
+                if (textInput) {
+                    textInput.value = '';
+                    // Update word count and button state
+                    const wordCount = document.getElementById('word-count');
+                    const charCount = document.getElementById('char-count');
+                    const analyzeBtn = document.getElementById('analyze-btn');
+                    
+                    if (wordCount) wordCount.textContent = '0 words';
+                    if (charCount) charCount.textContent = '0 characters';
+                    if (analyzeBtn) analyzeBtn.disabled = true;
+                }
+                
+                // Process the file upload
                 processFileUpload(e.target.files[0]);
                 
-                // Switch to upload tab and show file name
-                const uploadTab = document.querySelector('[data-method="upload"]');
-                if (uploadTab) {
-                    uploadTab.click();
+                // Switch to file tab to show upload status
+                const fileTab = document.querySelector('[data-method="file"]');
+                if (fileTab) {
+                    fileTab.click();
                 }
             }
         });
+        
+        console.log('✅ [INIT] File upload handlers initialized successfully');
+    } else {
+        console.warn('⚠️ [INIT] uploadArea or fileInput not found on page');
     }
 
     // Enhanced text input functionality
@@ -64,23 +92,6 @@ document.addEventListener('DOMContentLoaded', function() {
         // Clear file input when text is entered
         textInput.addEventListener('input', () => {
             if (fileInput) fileInput.value = '';
-        });
-    }
-
-    // Clear text input when file is selected
-    if (fileInput) {
-        fileInput.addEventListener('change', () => {
-            if (textInput) {
-                textInput.value = '';
-                // Update word count and button state
-                const wordCount = document.getElementById('word-count');
-                const charCount = document.getElementById('char-count');
-                const analyzeBtn = document.getElementById('analyze-btn');
-                
-                if (wordCount) wordCount.textContent = '0 words';
-                if (charCount) charCount.textContent = '0 characters';
-                if (analyzeBtn) analyzeBtn.disabled = true;
-            }
         });
     }
 });
@@ -97,18 +108,26 @@ function processFileUpload(file) {
     }
 
     // Validate file type
-    const allowedTypes = ['.pdf', '.docx', '.md', '.adoc', '.dita', '.txt'];
+    const allowedTypes = ['.pdf', '.docx', '.md', '.adoc', '.dita', '.xml', '.txt'];
     const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
     if (!allowedTypes.includes(fileExtension)) {
-        showNotification('Unsupported file type. Please use PDF, DOCX, Markdown, AsciiDoc, DITA, or TXT files.', 'danger');
+        showNotification('Unsupported file type. Please use PDF, DOCX, Markdown, AsciiDoc, DITA, XML, or TXT files.', 'danger');
         return;
     }
 
+    console.log('✅ [PROCESS] File validated:', file.name, 'Extension:', fileExtension);
+    
     // Show loading state
     showNotification('Processing file: ' + file.name, 'info');
     
-    // Process the file
-    handleFileUpload(file);
+    // Process the file - check if handleFileUpload is defined
+    if (typeof handleFileUpload === 'function') {
+        console.log('✅ [PROCESS] Calling handleFileUpload()');
+        handleFileUpload(file);
+    } else {
+        console.error('❌ [PROCESS] handleFileUpload function not found!');
+        showNotification('Error: Upload handler not available', 'danger');
+    }
 }
 
 /**
@@ -188,7 +207,11 @@ function initializeModernEditor() {
             
             // Update areas
             areas.forEach(area => area.classList.remove('active'));
-            document.getElementById(`${method}-input-area`).classList.add('active');
+            
+            const targetArea = document.getElementById(`${method}-input-area`);
+            if (targetArea) {
+                targetArea.classList.add('active');
+            }
             
             // Update analyze button state
             updateAnalyzeButton();
@@ -247,6 +270,11 @@ function clearEditor() {
         
         showNotification('Editor cleared', 'info');
     }
+    
+    // Clear uploaded file data if present
+    if (typeof clearUploadedFile === 'function') {
+        clearUploadedFile();
+    }
 }
 
 /**
@@ -294,42 +322,53 @@ In order to ensure successful deployment, we need to make sure that all team mem
  * Analyze content from modern editor
  */
 function analyzeEditorContent() {
-    // Get content from modern editor or legacy text input
-    const modernEditor = document.getElementById('modern-editor');
-    const textInput = document.getElementById('text-input');
+    // Get content type from dropdown
     const contentTypeSelect = document.getElementById('content-type-select');
+    const contentType = contentTypeSelect ? contentTypeSelect.value : 'concept';
     
-    let content = '';
-    if (modernEditor && modernEditor.value.trim()) {
-        content = modernEditor.value.trim();
-    } else if (textInput && textInput.value.trim()) {
-        content = textInput.value.trim();
-    }
-    
-    if (content) {
-        const analyzeBtn = document.getElementById('analyze-btn');
-        const contentType = contentTypeSelect ? contentTypeSelect.value : 'concept';
+    // Check if we have uploaded file data or text input
+    if (typeof uploadedFileData !== 'undefined' && uploadedFileData !== null) {
+        // Use uploaded file data with detected format
+        console.log('📊 Analyzing uploaded file:', uploadedFileData.filename);
+        console.log('📋 Detected format:', uploadedFileData.detected_format);
+        console.log('📝 Content type:', contentType);
         
-        // Show loading state
-        if (analyzeBtn) {
-            analyzeBtn.disabled = true;
-            const originalText = analyzeBtn.innerHTML;
-            analyzeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>Analyzing...</span>';
-            
-            // Simulate analysis (replace with actual analysis call)
-            setTimeout(() => {
-                analyzeBtn.disabled = false;
-                analyzeBtn.innerHTML = originalText;
-                showNotification(`Analysis complete for ${contentType} content! Results will appear below.`, 'success');
-            }, 2500);
+        // Don't show notification here - it's shown in analyzeContent function
+        
+        // Call analysis with uploaded file content and detected format
+        if (typeof analyzeContent === 'function') {
+            analyzeContent(
+                uploadedFileData.content,
+                uploadedFileData.detected_format,  // Use detected format from upload
+                contentType
+            );
+        } else {
+            console.error('analyzeContent function not available');
+            showNotification('Analysis function not available', 'danger');
+        }
+    } else {
+        // Get content from modern editor or legacy text input
+        const modernEditor = document.getElementById('modern-editor');
+        const textInput = document.getElementById('text-input');
+        
+        let content = '';
+        if (modernEditor && modernEditor.value.trim()) {
+            content = modernEditor.value.trim();
+        } else if (textInput && textInput.value.trim()) {
+            content = textInput.value.trim();
         }
         
-        showNotification(`Starting ${contentType} analysis...`, 'info');
-        
-        // Call the actual analysis function with content type
-        handleDirectTextAnalysis(content, contentType);
-    } else {
-        showNotification('Please enter some text to analyze.', 'warning');
+        if (content) {
+            console.log('📊 Analyzing text input');
+            console.log('📝 Content type:', contentType);
+            
+            // Don't show notification here - it's shown in analyzeContent function
+            
+            // Call the actual analysis function with content type
+            handleDirectTextAnalysis(content, contentType);
+        } else {
+            showNotification('Please enter some text or upload a file first.', 'warning');
+        }
     }
 }
 

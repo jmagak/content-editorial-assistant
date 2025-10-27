@@ -7,6 +7,9 @@ with robust fallback to keyword-based classification for reliability.
 
 import logging
 import numpy as np
+import pickle
+import os
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from collections import Counter
 import re
@@ -39,7 +42,7 @@ class NextGenTaxonomyClassifier:
     
     def __init__(self, model_manager=None):
         """
-        Initialize the classifier.
+        Initialize the classifier with disk-cached embeddings.
         
         Args:
             model_manager: Optional ModelManager for integration
@@ -49,7 +52,13 @@ class NextGenTaxonomyClassifier:
         self.category_embeddings = {}
         self.fallback_classifier = LegacyTaxonomyClassifier()
         
+        # World-class: Set up embedding cache directory
+        self.embedding_cache_dir = self._get_embedding_cache_dir()
+        
         self._initialize_sentence_transformer()
+        
+        # World-class: Load pre-computed category embeddings from disk
+        self._load_cached_embeddings()
     
     def classify_taxonomy(self, content: str, spacy_doc, keywords: List[str], 
                          taxonomy_config: Dict) -> List[Dict[str, Any]]:
@@ -105,9 +114,19 @@ class NextGenTaxonomyClassifier:
         
         for category, config in taxonomy_config.items():
             try:
-                # Get precomputed category embedding
+                # Get precomputed category embedding (with disk caching)
                 if category not in self.category_embeddings:
-                    self.category_embeddings[category] = self._create_category_embedding(config)
+                    # World-class: Try to load from disk cache first
+                    cached_embedding = self._load_category_embedding_from_cache(category)
+                    if cached_embedding is not None:
+                        self.category_embeddings[category] = cached_embedding
+                        logger.debug(f"Loaded cached embedding for category: {category}")
+                    else:
+                        # Compute and save to cache
+                        embedding = self._create_category_embedding(config)
+                        self.category_embeddings[category] = embedding
+                        self._save_category_embedding_to_cache(category, embedding)
+                        logger.debug(f"Computed and cached embedding for category: {category}")
                 
                 category_embedding = self.category_embeddings[category]
                 
@@ -143,20 +162,51 @@ class NextGenTaxonomyClassifier:
         return sorted(high_confidence, key=lambda x: x['confidence'], reverse=True)[:3]
     
     def _generate_semantic_summary(self, content: str, spacy_doc, keywords: List[str]) -> str:
-        """Generate a semantic summary for embedding."""
-        # Extract probable title
+        """
+        Generate a rich semantic summary for embedding.
+        
+        World-class enhancement: Include title, key sentences, section headings,
+        technical terms, and positional context for maximum accuracy.
+        """
+        components = []
+        
+        # 1. Extract probable title (highest weight)
         title = self._extract_probable_title(content)
+        if title:
+            components.append(f"Title: {title}")
         
-        # Extract key sentences
-        key_sentences = self._extract_key_sentences(content, max_sentences=3)
+        # 2. Extract section headings (structural signals)
+        headings = self._extract_section_headings(content)
+        if headings:
+            components.append(f"Sections: {' | '.join(headings[:3])}")
         
-        # Use top keywords for context
-        keyword_context = ' '.join(keywords[:5]) if keywords else ''
+        # 3. Extract key sentences (opening + closing for context)
+        key_sentences = self._extract_key_sentences_enhanced(content, max_sentences=3)
+        if key_sentences:
+            components.append(' '.join(key_sentences))
         
-        # Combine for rich semantic representation
-        summary = f"{title}. {' '.join(key_sentences)}"
-        if keyword_context:
-            summary += f" Keywords: {keyword_context}"
+        # 4. Use top keywords with technical term boosting
+        if keywords:
+            # Separate technical terms from regular keywords
+            technical_keywords = [kw for kw in keywords[:8] if self._is_technical_term(kw)]
+            regular_keywords = [kw for kw in keywords[:8] if kw not in technical_keywords]
+            
+            if technical_keywords:
+                components.append(f"Technical: {' '.join(technical_keywords[:5])}")
+            if regular_keywords:
+                components.append(f"Keywords: {' '.join(regular_keywords[:5])}")
+        
+        # 5. Add content type indicators if detectable
+        content_indicators = self._detect_content_indicators(content)
+        if content_indicators:
+            components.append(f"Type: {content_indicators}")
+        
+        # Combine all components into rich semantic representation
+        summary = '. '.join(components)
+        
+        # Limit to reasonable length for embedding (optimal: 200-400 chars)
+        if len(summary) > 400:
+            summary = summary[:397] + '...'
         
         return summary
     
@@ -184,8 +234,87 @@ class NextGenTaxonomyClassifier:
         
         return "Document"
     
+    def _extract_section_headings(self, content: str) -> List[str]:
+        """Extract section headings for structural signals."""
+        headings = []
+        
+        # AsciiDoc headings (== Section)
+        asciidoc_headings = re.findall(r'^==+\s+(.+)$', content, re.MULTILINE)
+        headings.extend(asciidoc_headings[:5])
+        
+        # Markdown headings (## Section)
+        if not headings:
+            markdown_headings = re.findall(r'^#{2,6}\s+(.+)$', content, re.MULTILINE)
+            headings.extend(markdown_headings[:5])
+        
+        return headings
+    
+    def _extract_key_sentences_enhanced(self, content: str, max_sentences: int = 3) -> List[str]:
+        """
+        Extract key sentences with positional awareness.
+        
+        World-class: First sentence + middle key sentence + last sentence
+        provides beginning, context, and conclusion signals.
+        """
+        sentences = re.split(r'[.!?]+', content)
+        sentences = [s.strip() for s in sentences if 10 <= len(s.strip()) <= 200]
+        
+        if not sentences:
+            return []
+        
+        if len(sentences) <= max_sentences:
+            return sentences
+        
+        # World-class approach: beginning + middle + end
+        key_sentences = []
+        
+        # First sentence (introduction)
+        key_sentences.append(sentences[0])
+        
+        # Middle sentence (context) if we have room
+        if max_sentences >= 2 and len(sentences) > 2:
+            middle_idx = len(sentences) // 2
+            key_sentences.append(sentences[middle_idx])
+        
+        # Last sentence (conclusion) if we have room and enough sentences
+        if max_sentences >= 3 and len(sentences) > 4:
+            key_sentences.append(sentences[-1])
+        
+        return key_sentences
+    
+    def _is_technical_term(self, term: str) -> bool:
+        """Check if a term is technical (APIs, tools, technologies)."""
+        technical_patterns = [
+            r'^[A-Z][a-z]+[A-Z]',  # CamelCase (e.g., JavaScript, OpenShift)
+            r'^[A-Z]{2,}$',        # Acronyms (e.g., API, REST, JSON)
+            r'(?i)^(api|sdk|cli|http|https|ssh|tcp|ip|dns|url|json|xml|yaml|html|css|sql)$',
+            r'(?i).*(server|client|protocol|framework|library|database|container|cluster)$'
+        ]
+        
+        return any(re.match(pattern, term) for pattern in technical_patterns)
+    
+    def _detect_content_indicators(self, content: str) -> str:
+        """Detect content type indicators for classification boost."""
+        content_lower = content[:500].lower()  # First 500 chars
+        
+        indicators = []
+        
+        # Procedural indicators
+        if re.search(r'\b(?:install|configure|setup|deploy)\b', content_lower):
+            indicators.append('procedural')
+        
+        # Conceptual indicators
+        if re.search(r'\b(?:understanding|overview|introduction|concept)\b', content_lower):
+            indicators.append('conceptual')
+        
+        # Reference indicators
+        if re.search(r'\b(?:reference|parameters?|options?|api|syntax)\b', content_lower):
+            indicators.append('reference')
+        
+        return ' + '.join(indicators) if indicators else ''
+    
     def _extract_key_sentences(self, content: str, max_sentences: int = 3) -> List[str]:
-        """Extract key sentences for semantic analysis."""
+        """Extract key sentences for semantic analysis (legacy method)."""
         # Simple sentence extraction
         sentences = re.split(r'[.!?]+', content)
         sentences = [s.strip() for s in sentences if 10 <= len(s.strip()) <= 200]
@@ -299,6 +428,79 @@ class NextGenTaxonomyClassifier:
         except Exception as e:
             logger.warning(f"Failed to initialize sentence transformer: {e}")
             self.sentence_transformer = None
+    
+    def _get_embedding_cache_dir(self) -> Path:
+        """Get directory for embedding cache (OpenShift-compatible)."""
+        # Check for OpenShift/Docker environment
+        if os.path.exists('/app/.cache'):
+            cache_dir = Path('/app/.cache/taxonomy_embeddings')
+        else:
+            # Development environment
+            cache_dir = Path.home() / '.cache' / 'metadata_assistant' / 'taxonomy_embeddings'
+        
+        # Create directory if it doesn't exist
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback to /tmp if permissions issue
+            cache_dir = Path('/tmp/taxonomy_embeddings')
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            logger.warning(f"Using fallback cache directory: {cache_dir}")
+        
+        return cache_dir
+    
+    def _load_cached_embeddings(self):
+        """Load all cached category embeddings from disk."""
+        if not self.sentence_transformer:
+            return
+        
+        try:
+            cache_file = self.embedding_cache_dir / 'category_embeddings.pkl'
+            if cache_file.exists():
+                with open(cache_file, 'rb') as f:
+                    cached_data = pickle.load(f)
+                    # Verify cache version matches current model
+                    if cached_data.get('model') == 'all-MiniLM-L6-v2':
+                        self.category_embeddings = cached_data.get('embeddings', {})
+                        logger.info(f"Loaded {len(self.category_embeddings)} cached category embeddings from disk")
+                    else:
+                        logger.info("Cache model version mismatch, will recompute embeddings")
+        except Exception as e:
+            logger.warning(f"Failed to load cached embeddings: {e}")
+    
+    def _save_all_embeddings_to_cache(self):
+        """Save all category embeddings to disk cache."""
+        if not self.sentence_transformer or not self.category_embeddings:
+            return
+        
+        try:
+            cache_file = self.embedding_cache_dir / 'category_embeddings.pkl'
+            cache_data = {
+                'model': 'all-MiniLM-L6-v2',
+                'embeddings': self.category_embeddings,
+                'version': '1.0'
+            }
+            
+            with open(cache_file, 'wb') as f:
+                pickle.dump(cache_data, f)
+            
+            logger.info(f"Saved {len(self.category_embeddings)} category embeddings to disk cache")
+        except Exception as e:
+            logger.warning(f"Failed to save embeddings to cache: {e}")
+    
+    def _load_category_embedding_from_cache(self, category: str) -> Optional[np.ndarray]:
+        """Load a specific category embedding from disk cache."""
+        # First check in-memory cache
+        if category in self.category_embeddings:
+            return self.category_embeddings[category]
+        
+        # Then check disk cache (already loaded in __init__)
+        return None
+    
+    def _save_category_embedding_to_cache(self, category: str, embedding: np.ndarray):
+        """Save a specific category embedding and update disk cache."""
+        # Save all embeddings together (more efficient)
+        self._save_all_embeddings_to_cache()
 
 
 class LegacyTaxonomyClassifier:

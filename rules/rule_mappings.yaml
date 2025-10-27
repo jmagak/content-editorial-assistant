@@ -79,6 +79,57 @@ rule_priorities:
     - technical_web_addresses
 
 # ===================================================================
+# CONTEXT HINTS FOR BLOCKS
+# Provides contextual hints to rules when document metadata is unavailable
+# These are weaker signals than explicit metadata but useful as fallbacks
+# ===================================================================
+block_context_hints:
+  # Ordered lists are STRONGLY associated with procedural content
+  ordered_list:
+    likely_content_types: [PROCEDURE, REFERENCE]
+    procedural_probability: 0.8  # High confidence
+    
+  list_item_ordered:
+    likely_content_types: [PROCEDURE, REFERENCE]
+    procedural_probability: 0.8
+  
+  # Unordered lists are more general but can be procedural
+  unordered_list:
+    likely_content_types: [CONCEPT, PROCEDURE, REFERENCE]
+    procedural_probability: 0.3  # Lower confidence
+    
+  list_item_unordered:
+    likely_content_types: [CONCEPT, PROCEDURE, REFERENCE]
+    procedural_probability: 0.3
+  
+  # Definition lists typically used in reference documentation
+  dlist:
+    likely_content_types: [REFERENCE, CONCEPT]
+    procedural_probability: 0.1  # Rarely procedural
+  
+  # Headings with specific keywords
+  heading_with_procedure_keywords:
+    keywords: [procedure, steps, instructions, how to, walkthrough]
+    implies_content_type: PROCEDURE
+  
+  heading_with_troubleshooting_keywords:
+    keywords: [troubleshooting, debugging, solving, fixing, resolving]
+    implies_content_type: PROCEDURE
+    special_handling: true  # Lists under these are imperative by nature
+  
+  heading_with_verification_keywords:
+    keywords: [verification, testing, validating, checking]
+    implies_content_type: PROCEDURE
+  
+  heading_with_concept_keywords:
+    keywords: [overview, understanding, about, introduction, concepts]
+    implies_content_type: CONCEPT
+  
+  heading_with_reference_keywords:
+    keywords: [reference, api, commands, options, parameters]
+    implies_content_type: REFERENCE
+
+# ===================================================================
 # CONTEXT-AWARE BLOCK TYPE RULES
 # Sophisticated rule application based on content type and context
 # ===================================================================

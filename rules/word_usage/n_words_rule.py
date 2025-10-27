@@ -25,6 +25,10 @@ class NWordsRule(BaseWordUsageRule):
         Computes a nuanced evidence score per occurrence considering linguistic,
         structural, semantic, and feedback clues.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -249,6 +253,28 @@ class NWordsRule(BaseWordUsageRule):
         Returns:
             float: Evidence score from 0.0 (no evidence) to 1.0 (strong evidence)
         """
+        
+        # === SURGICAL GUARD FOR "new" IN PROCEDURAL CONTEXT ===
+        if word.lower() == 'new':
+            # Check for verbs indicating a change, update, or creation process.
+            procedural_verbs = {
+                'set', 'change', 'update', 'create', 'restart', 'reboot',
+                'apply', 'activate', 'use', 'get', 'display', 'verify'
+            }
+            # Check for nouns indicating a state or value.
+            procedural_nouns = {
+                'value', 'hostname', 'name', 'setting', 'configuration',
+                'version', 'file', 'parameter', 'service', 'change'
+            }
+            
+            # Scan the sentence for these contextual clues.
+            sent_lemmas = {t.lemma_.lower() for t in sentence}
+            verb_clue_found = any(verb in sent_lemmas for verb in procedural_verbs)
+            noun_clue_found = any(noun in sent_lemmas for noun in procedural_nouns)
+            
+            # If we find both a procedural verb and a relevant noun, this is a valid use of "new".
+            if verb_clue_found and noun_clue_found:
+                return 0.0  # Suppress the error completely.
         
         # === DYNAMIC BASE EVIDENCE ASSESSMENT ===
         evidence_score = self._get_base_n_word_evidence_score(word, category, sentence, context)

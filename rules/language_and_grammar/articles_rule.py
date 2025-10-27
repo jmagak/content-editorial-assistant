@@ -1,7 +1,6 @@
 """
-Articles Rule (YAML-based Linguistic Analysis)
-Based on IBM Style Guide topic: "Articles"
-Uses YAML-based phonetics vocabulary for maintainable article rules.
+Articles Rule
+Based on IBM Style Guide: Checks incorrect and missing articles using linguistic analysis.
 """
 from typing import List, Dict, Any, Optional
 import pyinflect
@@ -14,25 +13,29 @@ except ImportError:
     Doc = None
     Token = None
 
+try:
+    from rule_enhancements import get_adapter, calculate_evidence, EvidencePriority
+    ENHANCEMENTS_AVAILABLE = True
+except ImportError:
+    ENHANCEMENTS_AVAILABLE = False
+
 class ArticlesRule(BaseLanguageRule):
-    """
-    Checks for common article errors using YAML-based phonetics vocabulary.
-    Uses true linguistic analysis to distinguish between countable and uncountable (mass) nouns.
-    """
+    """Checks incorrect and missing articles using YAML-based configuration."""
     
     def __init__(self):
         super().__init__()
         self.vocabulary_service = get_articles_vocabulary()
+        self.config = self.vocabulary_service.get_articles_config()
+        self.adapter = get_adapter() if ENHANCEMENTS_AVAILABLE else None
     
     def _get_rule_type(self) -> str:
         return 'articles'
 
     def analyze(self, text: str, sentences: List[str], nlp=None, context=None) -> List[Dict[str, Any]]:
-        """
-        Analyzes sentences for article errors using evidence-based scoring.
-        Uses sophisticated linguistic analysis to distinguish genuine errors from 
-        acceptable technical usage and contextual variations.
-        """
+        """Analyze sentences for article errors using evidence-based scoring."""
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
+        
         errors = []
         if not nlp:
             return errors
@@ -44,17 +47,12 @@ class ArticlesRule(BaseLanguageRule):
         doc = nlp(text)
         for i, sent in enumerate(doc.sents):
             for token in sent:
-                # Check for incorrect a/an usage
                 if token.lower_ in ['a', 'an'] and token.i + 1 < len(doc):
-                    next_token = doc[token.i + 1]
-                    if self._is_incorrect_article_usage(token, next_token):
-                        # Calculate evidence score for this incorrect usage
-                        evidence_score = self._calculate_incorrect_article_evidence(
-                            token, next_token, sent, text, context
-                        )
+                    next_token = self._get_next_non_punct_token(token, doc)
+                    if next_token and self._is_incorrect_article_usage(token, next_token):
+                        evidence_score = self._calculate_incorrect_article_evidence(token, next_token, sent, text, context)
                         
-                        # Only create error if evidence suggests it's worth flagging
-                        if evidence_score > 0.1:  # Low threshold - let enhanced validation decide
+                        if evidence_score > self.config['evidence_thresholds']['min_threshold']:
                             errors.append(self._create_error(
                                 sentence=sent.text, sentence_index=i,
                                 message=self._get_contextual_message_incorrect(token, next_token, evidence_score),
@@ -67,15 +65,39 @@ class ArticlesRule(BaseLanguageRule):
                                 flagged_text=f"{token.text} {next_token.text}"
                             ))
                 
-                # Check for missing articles (only in appropriate content types)
-                if content_classification == 'descriptive_content' and self._is_missing_article_candidate(token, doc) and not self._is_admonition_context(token, context):
-                    # Calculate evidence score for this missing article
-                    evidence_score = self._calculate_missing_article_evidence(
-                        token, sent, text, context, content_classification
-                    )
+                is_candidate = self._is_missing_article_candidate(token, doc)
+                
+                if not is_candidate and self.adapter and ENHANCEMENTS_AVAILABLE:
+                    block_type = context.get('block_type', '') if context else ''
+                    if block_type in self.config['block_types']['lists']:
+                        is_complete = self._is_complete_sentence_in_list(sent)
+                        if (is_complete and token.pos_ == self.config['pos_tags']['noun'] and 
+                            token.dep_ in [self.config['dependency_tags']['subject'], self.config['dependency_tags']['passive_subject']]):
+                            has_article = any(child.dep_ == self.config['dependency_tags']['determiner'] or 
+                                            child.pos_ == 'DET' for child in token.children)
+                            if not has_article and token.i < 3:
+                                is_candidate = True
+                
+                if is_candidate and not self._is_admonition_context(token, context):
+                    evidence_score = self._calculate_missing_article_evidence(token, sent, text, context, content_classification)
                     
-                    # Only create error if evidence suggests it's worth flagging
-                    if evidence_score > 0.1:  # Low threshold - let enhanced validation decide
+                    if self.adapter and ENHANCEMENTS_AVAILABLE:
+                        block_type = context.get('block_type', '') if context else ''
+                        if block_type in self.config['block_types']['lists']:
+                            is_complete = self._is_complete_sentence_in_list(sent)
+                            if is_complete:
+                                final_score, should_flag, reasoning = calculate_evidence(
+                                    base_score=evidence_score,
+                                    factors=[
+                                        (0.4, 'HIGH', 'Complete sentence in list requires articles'),
+                                        (0.1, 'MEDIUM', 'Missing article detected')
+                                    ],
+                                    rule_type='articles_complete_sentence_list',
+                                    context={'is_complete_sentence': True}
+                                )
+                                evidence_score = final_score
+                    
+                    if evidence_score > self.config['evidence_thresholds']['min_threshold']:
                         errors.append(self._create_error(
                             sentence=sent.text, sentence_index=i,
                             message=self._get_contextual_message_missing(token, evidence_score),
@@ -89,48 +111,46 @@ class ArticlesRule(BaseLanguageRule):
                         ))
         return errors
 
+    def _get_next_non_punct_token(self, token: Token, doc: Doc) -> Optional[Token]:
+        """Get the next non-punctuation token, skipping markup characters."""
+        for i in range(token.i + 1, min(len(doc), token.i + self.config['inline_list_thresholds']['max_lookahead'])):
+            candidate = doc[i]
+            if candidate.pos_ != self.config['pos_tags']['punctuation']:
+                return candidate
+        return None
+    
     def _starts_with_vowel_sound(self, word: str) -> bool:
-        """
-        YAML-based phonetic analysis for article selection.
-        Determines vowel vs. consonant sound based on YAML vocabulary, not spelling.
-        """
-        word_lower = word.lower()
+        """YAML-based phonetic analysis for article selection."""
+        word_lower = word.lower().strip('`\'\"[](){}')
         
-        # Load phonetics vocabulary from YAML
+        if not word_lower:
+            return False
+        
         phonetics = self.vocabulary_service.get_articles_phonetics()
         
-        # Check consonant sound words (vowel letters but consonant sounds)
         consonant_sound_words = set()
         consonant_data = phonetics.get('consonant_sound_words', {})
         for category in consonant_data.values():
             if isinstance(category, list):
                 consonant_sound_words.update(category)
         
-        # Check vowel sound words (consonant letters but vowel sounds)
         vowel_sound_words = set()
         vowel_data = phonetics.get('vowel_sound_words', {})
         for category in vowel_data.values():
             if isinstance(category, list):
                 vowel_sound_words.update(category)
         
-        # Check exact word matches first (most accurate)
         if word_lower in consonant_sound_words:
             return False
         if word_lower in vowel_sound_words:
             return True
             
-        # LINGUISTIC ANCHOR 3: Pattern-based phonetic rules
-        # Handle common prefixes that affect pronunciation
         if word_lower.startswith('uni') and len(word_lower) > 3:
-            # Most "uni-" words are pronounced /j/ (university, uniform, etc.)
             return False
         
         if word_lower.startswith('eu') and len(word_lower) > 2:
-            # Most "eu-" words are pronounced /j/ (European, euphemism, etc.)  
             return False
         
-        # LINGUISTIC ANCHOR 4: Default vowel letter check
-        # Fall back to simple vowel letter detection for other cases
         return word_lower[0] in 'aeiou'
 
     def _is_incorrect_article_usage(self, article_token: Token, next_token: Token) -> bool:
@@ -142,38 +162,23 @@ class ArticlesRule(BaseLanguageRule):
         return False
 
     def _is_uncountable(self, token: Token) -> bool:
-        """
-        LINGUISTIC ANCHOR: Enhanced mass noun detection for technical contexts.
-        Combines pyinflect analysis with YAML-based technical mass noun lists.
-        This approach is production-ready and scalable without hardcoding.
-        """
+        """Enhanced mass noun detection using YAML and pyinflect."""
         lemma = token.lemma_.lower()
         
-        # LINGUISTIC ANCHOR 1: Check YAML-based technical mass nouns
-        # This replaces hardcoded lists and makes the rule scalable
         if self._is_technical_mass_noun(lemma):
             return True
         
-        # LINGUISTIC ANCHOR 3: Context-aware mass noun detection
-        # Check if the noun is used in typical mass noun contexts
         if self._is_mass_noun_context(token):
             return True
         
-        # LINGUISTIC ANCHOR 4: Fallback to pyinflect for other cases
         plural_form = pyinflect.getInflection(token.lemma_, 'NNS')
         return plural_form is None
 
     def _is_technical_mass_noun(self, lemma: str) -> bool:
-        """
-        Check if word is a technical mass noun using YAML vocabulary service.
-        
-        This method replaces hardcoded lists to make the rule production-ready and scalable.
-        Technical mass nouns can be added to articles_phonetics.yaml without code changes.
-        """
+        """Check if word is a technical mass noun using YAML vocabulary."""
         phonetics_data = self.vocabulary_service.get_articles_phonetics()
         technical_mass_nouns = phonetics_data.get('technical_mass_nouns', {})
         
-        # Check all categories of technical mass nouns
         for category, nouns_list in technical_mass_nouns.items():
             if isinstance(nouns_list, list) and lemma in nouns_list:
                 return True
@@ -181,90 +186,72 @@ class ArticlesRule(BaseLanguageRule):
         return False
 
     def _is_mass_noun_context(self, token: Token) -> bool:
-        """
-        LINGUISTIC ANCHOR: Context-aware mass noun detection.
-        Identifies when a noun is used in typical mass noun contexts.
-        """
-        # PATTERN 1: Verbs that typically take mass noun objects
-        mass_noun_verbs = {
-            'ensure', 'ensures', 'provide', 'provides', 'require', 'requires',
-            'maintain', 'maintains', 'achieve', 'achieves', 'improve', 'improves',
-            'manage', 'manages', 'handle', 'handles', 'process', 'processes',
-            'direct', 'directs', 'control', 'controls', 'monitor', 'monitors',
-            'optimize', 'optimizes', 'enhance', 'enhances', 'maximize', 'maximizes'
-        }
-        
-        # Check if this noun is the direct object of a mass-noun-taking verb
-        if (token.dep_ == 'dobj' and 
-            token.head.pos_ == 'VERB' and 
-            token.head.lemma_.lower() in mass_noun_verbs):
-            return True
-        
-        # PATTERN 2: Prepositions that commonly precede mass nouns
-        mass_noun_prepositions = {
-            'for', 'with', 'of', 'in', 'on', 'through', 'via', 'by'
-        }
-        
-        # Check if this noun follows a preposition that commonly takes mass nouns
-        if (token.dep_ == 'pobj' and 
-            token.head.pos_ == 'ADP' and 
-            token.head.lemma_.lower() in mass_noun_prepositions):
-            return True
-        
-        # PATTERN 3: Common mass noun phrase patterns
-        # Check for patterns like "data X", "network X", "system X"
+        """Context-aware mass noun detection using conservative patterns."""
         if token.i > 0:
             prev_token = token.doc[token.i - 1]
-            mass_noun_modifiers = {
-                'data', 'network', 'system', 'application', 'service',
-                'database', 'server', 'client', 'user', 'admin',
-                'security', 'performance', 'quality', 'real-time'
-            }
             
-            if (prev_token.pos_ in ('NOUN', 'ADJ') and 
-                prev_token.lemma_.lower() in mass_noun_modifiers and
-                token.dep_ in ('compound', 'dobj', 'pobj')):
+            if (prev_token.pos_ in (self.config['pos_tags']['noun'], 'ADJ') and 
+                prev_token.lemma_.lower() in self.config['mass_noun_modifiers'] and
+                token.dep_ in (self.config['dependency_tags']['compound'], 
+                               self.config['dependency_tags']['direct_object'], 
+                               self.config['dependency_tags']['prep_object'])):
                 return True
         
         return False
 
     def _is_missing_article_candidate(self, token: Token, doc: Doc) -> bool:
-        # LINGUISTIC ANCHOR 1: Basic POS and morphology checks.
-        if not (token.pos_ == 'NOUN' and token.tag_ == 'NN' and not self._is_uncountable(token)):
+        if not (token.pos_ == self.config['pos_tags']['noun'] and token.tag_ == 'NN' and not self._is_uncountable(token)):
             return False
             
-        # LINGUISTIC ANCHOR 2: Check for existing determiners or possessives.
-        if any(child.dep_ in ('det', 'poss') for child in token.children) or token.dep_ == 'poss':
+        if any(child.dep_ in (self.config['dependency_tags']['determiner'], self.config['dependency_tags']['possessive']) 
+               for child in token.children) or token.dep_ == self.config['dependency_tags']['possessive']:
             return False
 
-        # LINGUISTIC ANCHOR 2a: Check for hyphenated compounds (ZERO FALSE POSITIVE GUARD)
-        # Don't flag tokens that are part of hyphenated compound adjectives like "fault-tolerant"
         if self._is_hyphenated_compound_element(token, doc):
             return False
 
-        # LINGUISTIC ANCHOR 3: Check for grammatical contexts where articles are not used.
-        if token.dep_ == 'compound':
+        if any(child.dep_ == self.config['dependency_tags']['compound'] for child in token.children):
+            return False
+
+        if token.i > 0:
+            prev_token = doc[token.i - 1]
+            if (prev_token.pos_ in (self.config['pos_tags']['noun'], self.config['pos_tags']['proper_noun'], 'ADJ') or 
+                (prev_token.tag_ == self.config['pos_tags']['gerund'] and prev_token.dep_ in ('pcomp', self.config['dependency_tags']['adjectival_modifier'], self.config['dependency_tags']['compound']))):
+                has_det = any(child.dep_ == self.config['dependency_tags']['determiner'] for child in prev_token.children)
+                if not has_det:
+                    return False
+
+        if token.dep_ == self.config['dependency_tags']['prep_object'] and token.head.lemma_ == 'by':
+            if token.lemma_ in self.config['adverbial_nouns']:
+                return False
+
+        if token.dep_ == self.config['dependency_tags']['compound']:
             return False
         if token.lemma_.lower() == 'step' and token.i + 1 < len(doc) and doc[token.i + 1].like_num:
             return False
             
-        # LINGUISTIC ANCHOR 3a: Technical terms in prepositional phrases (existing logic)
-        if token.dep_ == 'pobj':
+        if token.dep_ == self.config['dependency_tags']['prep_object']:
             prep = token.head
-            if prep.lemma_ in ['in', 'on', 'at', 'by', 'before', 'after'] and prep.head.pos_ == 'VERB':
-                if token.lemma_ in ['bold', 'italic', 'deployment', 'substitution', 'text']:
+            if prep.lemma_ in ['in', 'on', 'at', 'by', 'before', 'after'] and prep.head.pos_ == self.config['pos_tags']['verb']:
+                if token.lemma_ in ['bold', 'italic', 'text']:
                     return False
         
-        # LINGUISTIC ANCHOR 3b: Compound technical phrases (NEW)
         if self._is_technical_compound_phrase(token, doc):
             return False
             
-        # LINGUISTIC ANCHOR 3c: Technical terms in coordinated constructions (NEW)
         if self._is_technical_coordination(token, doc):
             return False
         
-        # LINGUISTIC ANCHOR 4: The noun must be in a role that typically requires an article.
-        if token.dep_ in ('nsubj', 'dobj', 'pobj', 'attr'):
+        if token.dep_ in (self.config['dependency_tags']['subject'], self.config['dependency_tags']['direct_object'], 
+                          self.config['dependency_tags']['prep_object'], self.config['dependency_tags']['attribute'], 
+                          self.config['dependency_tags']['noun_modifier']):
+            if token.dep_ == self.config['dependency_tags']['noun_modifier']:
+                has_coordination = any(sib.dep_ in (self.config['dependency_tags']['coordinating_conjunction'], 
+                                                     self.config['dependency_tags']['coordination']) 
+                                      for sib in token.head.children)
+                if not has_coordination:
+                    return False
+            
             if token.i > 0 and ('attributeplaceholder' in doc[token.i - 1].text or 'asciidoclinkplaceholder' in doc[token.i - 1].text):
                 return False
             return True
@@ -272,819 +259,570 @@ class ArticlesRule(BaseLanguageRule):
         return False
 
     def _is_technical_compound_phrase(self, token: Token, doc: Doc) -> bool:
-        """
-        Detects technical compound phrases where articles are typically omitted.
-        Examples: "attribute substitution", "error handling", "data processing"
-        """
-        # Define technical terms commonly used without articles
-        technical_terms = {
-            'substitution', 'text', 'bold', 'italic', 'deployment', 'configuration',
-            'analysis', 'processing', 'handling', 'formatting', 'styling', 'parsing',
-            'validation', 'authentication', 'authorization', 'encryption', 'compression',
-            'optimization', 'integration', 'implementation', 'documentation', 'testing',
-            'debugging', 'monitoring', 'logging', 'caching', 'indexing', 'rendering',
-            'compilation', 'execution', 'initialization', 'installation', 'backup',
-            'recovery', 'migration', 'synchronization', 'serialization', 'deserialization'
-        }
-        
-        if token.lemma_.lower() not in technical_terms:
+        """Detect technical compound phrases where articles are typically omitted."""
+        if token.lemma_.lower() not in self.config['truly_uncountable_technical_terms']:
             return False
         
-        # Check if this noun is modified by technical adjectives or other nouns
-        technical_modifiers = {
-            'attribute', 'parameter', 'configuration', 'system', 'data', 'file',
-            'database', 'network', 'security', 'user', 'admin', 'server', 'client',
-            'application', 'service', 'component', 'module', 'library', 'framework',
-            'algorithm', 'protocol', 'interface', 'api', 'endpoint', 'resource',
-            'metadata', 'schema', 'template', 'pattern', 'model', 'structure',
-            'format', 'syntax', 'semantic', 'logical', 'physical', 'virtual',
-            'dynamic', 'static', 'automatic', 'manual', 'custom', 'default',
-            'basic', 'advanced', 'complex', 'simple', 'standard', 'extended',
-            'paragraph'  # Added for "paragraph analysis"
-        }
+        plural_form = pyinflect.getInflection(token.lemma_, 'NNS')
+        if plural_form and len(plural_form) > 0:
+            return False
         
-        # Look for technical modifiers in children (adjectives or noun modifiers)
+        if token.dep_ == self.config['dependency_tags']['direct_object'] and token.head.pos_ == self.config['pos_tags']['verb']:
+            if token.head.lemma_.lower() in self.config['countable_context_verbs']:
+                return False
+        
+        has_technical_modifier = False
         for child in token.children:
-            if (child.pos_ in ('ADJ', 'NOUN') and 
-                child.dep_ in ('amod', 'nmod', 'compound') and
-                child.lemma_.lower() in technical_modifiers):
-                return True
+            if (child.pos_ in ('ADJ', self.config['pos_tags']['noun']) and 
+                child.dep_ in (self.config['dependency_tags']['adjectival_modifier'], 
+                               self.config['dependency_tags']['noun_modifier'], 
+                               self.config['dependency_tags']['compound']) and
+                child.lemma_.lower() in self.config['technical_modifiers']):
+                has_technical_modifier = True
+                break
         
-        # Look for technical modifiers as siblings in coordinated structures
-        if token.dep_ == 'dobj':
-            # Check siblings that are coordinated or modify the same head
-            for sibling in token.head.children:
-                if (sibling != token and sibling.pos_ in ('ADJ', 'NOUN') and
-                    sibling.dep_ in ('amod', 'nmod') and
-                    sibling.lemma_.lower() in technical_modifiers):
-                    return True
+        if not has_technical_modifier:
+            if token.dep_ == self.config['dependency_tags']['direct_object']:
+                for sibling in token.head.children:
+                    if (sibling != token and sibling.pos_ in ('ADJ', self.config['pos_tags']['noun']) and
+                        sibling.dep_ in (self.config['dependency_tags']['adjectival_modifier'], 
+                                        self.config['dependency_tags']['noun_modifier']) and
+                        sibling.lemma_.lower() in self.config['technical_modifiers']):
+                        has_technical_modifier = True
+                        break
         
-        return False
+        if not has_technical_modifier:
+            return False
+        
+        if token.dep_ == self.config['dependency_tags']['direct_object'] and token.head.pos_ == self.config['pos_tags']['verb']:
+            if token.head.lemma_.lower() in self.config['countable_context_verbs']:
+                return False
+        
+        return True
 
     def _is_technical_coordination(self, token: Token, doc: Doc) -> bool:
-        """
-        Detects when a technical term is part of a coordination with other technical terms.
-        Examples: "analysis and substitution", "formatting and styling"
-        """
-        technical_terms = {
-            'substitution', 'text', 'bold', 'italic', 'deployment', 'configuration',
-            'analysis', 'processing', 'handling', 'formatting', 'styling', 'parsing',
-            'validation', 'authentication', 'authorization', 'encryption', 'compression',
-            'optimization', 'integration', 'implementation', 'documentation', 'testing',
-            'debugging', 'monitoring', 'logging', 'caching', 'indexing', 'rendering'
-        }
-        
-        if token.lemma_.lower() not in technical_terms:
+        """Detect when a technical term is part of coordination with other technical terms."""
+        if token.lemma_.lower() not in self.config['truly_uncountable_technical_terms']:
             return False
         
-        # Check if this token is part of a coordination (conj dependency)
-        if token.dep_ == 'conj':
-            # Check if it's coordinated with another technical term
+        plural_form = pyinflect.getInflection(token.lemma_, 'NNS')
+        if plural_form and len(plural_form) > 0:
+            return False
+        
+        if token.dep_ == self.config['dependency_tags']['coordination']:
             head = token.head
-            if head.lemma_.lower() in technical_terms:
+            if head.lemma_.lower() in self.config['truly_uncountable_technical_terms']:
                 return True
         
-        # Check if this token has technical terms as conjuncts
         for child in token.children:
-            if (child.dep_ == 'conj' and 
-                child.pos_ == 'NOUN' and
-                child.lemma_.lower() in technical_terms):
+            if (child.dep_ == self.config['dependency_tags']['coordination'] and 
+                child.pos_ == self.config['pos_tags']['noun'] and
+                child.lemma_.lower() in self.config['truly_uncountable_technical_terms']):
                 return True
         
         return False
 
     def _is_admonition_context(self, token: Token, context: Optional[Dict[str, Any]]) -> bool:
-        """
-        LINGUISTIC ANCHOR: Context-aware admonition detection using structural information.
-        Checks if we're in a context where admonition keywords are legitimate.
-        """
+        """Check if we're in an admonition context."""
         if not context:
             return False
         
-        # Check if we're in an admonition block
         if context.get('block_type') == 'admonition':
             return True
         
-        # Check if the next block is an admonition (introducing context)
         if context.get('next_block_type') == 'admonition':
             return True
         
-        # Check if this is an admonition-related keyword
-        admonition_keywords = {'note', 'tip', 'important', 'warning', 'caution'}
-        if token.lemma_.lower() in admonition_keywords:
+        if token.lemma_.lower() in self.config['admonition_keywords']:
             return True
         
         return False
 
-    # === EVIDENCE-BASED CALCULATION METHODS ===
-
     def _calculate_incorrect_article_evidence(self, article_token, next_token, sentence, text: str, context: dict) -> float:
-        """
-        Calculate evidence score (0.0-1.0) for incorrect a/an usage.
-        
-        Higher scores indicate stronger evidence of a genuine error.
-        Lower scores indicate borderline cases or acceptable variations.
-        
-        Args:
-            article_token: The article token (a/an)
-            next_token: The following word token
-            sentence: Sentence containing the tokens
-            text: Full document text
-            context: Document context (block_type, content_type, etc.)
-            
-        Returns:
-            float: Evidence score from 0.0 (acceptable) to 1.0 (clear error)
-        """
-        evidence_score = 0.0
-        
-        # === STEP 1: BASE EVIDENCE ASSESSMENT ===
-        # This is definitely an incorrect article usage (phonetically wrong)
-        evidence_score = 0.8  # Start with high evidence for phonetic errors
-        
-        # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
+        """Calculate evidence score for incorrect a/an usage."""
+        evidence_score = self.config['evidence_thresholds']['incorrect_base']
         evidence_score = self._apply_linguistic_clues_incorrect(evidence_score, article_token, next_token, sentence)
-        
-        # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._apply_structural_clues_incorrect(evidence_score, article_token, next_token, context)
-        
-        # === STEP 4: SEMANTIC CLUES (MACRO-LEVEL) ===
         evidence_score = self._apply_semantic_clues_incorrect(evidence_score, article_token, next_token, text, context)
-        
-        # === STEP 5: FEEDBACK PATTERNS (LEARNING CLUES) ===
         evidence_score = self._apply_feedback_clues_incorrect(evidence_score, article_token, next_token, context)
         
-        return max(0.0, min(1.0, evidence_score))  # Clamp to valid range
+        return max(0.0, min(1.0, evidence_score))
 
     def _calculate_missing_article_evidence(self, noun_token, sentence, text: str, context: dict, content_classification: str) -> float:
-        """
-        Calculate evidence score (0.0-1.0) for missing article before noun.
-        
-        Higher scores indicate stronger evidence of missing article.
-        Lower scores indicate acceptable omission or technical usage.
-        
-        Args:
-            noun_token: The noun token potentially missing an article
-            sentence: Sentence containing the token
-            text: Full document text
-            context: Document context (block_type, content_type, etc.)
-            content_classification: Content type classification
-            
-        Returns:
-            float: Evidence score from 0.0 (acceptable omission) to 1.0 (missing article)
-        """
-        
-        # === ZERO FALSE POSITIVE GUARD FOR UNCOUNTABLE TECHNICAL COMPOUNDS ===
-        # CRITICAL: Before any other analysis, check if the noun is part of a
-        # well-known uncountable technical compound noun (e.g., "disk space").
-        # If so, it is not an error, so we return 0.0 immediately.
-
+        """Calculate evidence score for missing article before noun."""
         if noun_token.i > 0:
             doc = noun_token.doc
             prev_token = doc[noun_token.i - 1]
-            # Check if the preceding token is a noun or adjective modifying our target noun
-            if prev_token.dep_ in ('compound', 'amod'):
+            if prev_token.dep_ in (self.config['dependency_tags']['compound'], self.config['dependency_tags']['adjectival_modifier']):
                 compound_phrase = f"{prev_token.text.lower()} {noun_token.text.lower()}"
-                
-                # This set can be expanded over time with more examples.
-                uncountable_compounds = {
-                    "disk space",
-                    "error handling",
-                    "data processing",
-                    "user authentication",
-                    "attribute substitution",
-                    "system performance",
-                    "network traffic",
-                    "load balancing"
-                }
-                
-                if compound_phrase in uncountable_compounds:
-                    return 0.0  # This is a known technical phrase, not an error.
+                if compound_phrase in self.config['uncountable_compounds']:
+                    return 0.0
+        
+        if self._is_technical_value_or_keyword(noun_token, sentence):
+            return 0.0
+        
+        if noun_token.i > 0 and noun_token.i < len(noun_token.doc) - 1:
+            prev_char_is_quote = noun_token.doc[noun_token.i - 1].text == "'"
+            next_char_is_quote = noun_token.doc[noun_token.i + 1].text == "'"
+            if prev_char_is_quote and next_char_is_quote:
+                return 0.0
+        
+        if noun_token.dep_ == self.config['dependency_tags']['prep_object']:
+            if noun_token.lemma_ in self.config['abstract_tech_nouns']:
+                is_unmodified = not any(child.dep_ == self.config['dependency_tags']['adjectival_modifier'] 
+                                       for child in noun_token.children)
+                if is_unmodified:
+                    return 0.0
 
-        evidence_score = 0.0
+        evidence_score = self.config['evidence_thresholds']['missing_base']
         
-        # === STEP 1: BASE EVIDENCE ASSESSMENT ===
-        # Start with moderate evidence for missing article candidate
-        evidence_score = 0.6  # Start with moderate evidence
-        
-        # === INLINE LIST CLUE (EARLY EXIT FOR LIST ITEMS) ===
-        # Detect inline lists where articles are commonly and correctly omitted
         if self._is_inline_list_item(noun_token, sentence, text, context):
-            evidence_score -= 0.5  # Major reduction for inline list items
-            # In list items, articles are often correctly omitted for brevity:
-            # "- Configuration options" (not "- The configuration options")
-            # "1. User authentication" (not "1. The user authentication")
-            # "* Database connections" (not "* The database connections")
+            evidence_score -= self.config['missing_linguistic_weights']['inline_list_reduction']
         
-        # === STYLE POLISH: FORMAL VERB + ABSTRACT NOUN CLUE ===
-        # Detect formal constructions where abstract nouns as direct objects appropriately omit articles
         if self._is_formal_verb_abstract_noun_construction(noun_token, sentence):
-            evidence_score -= 0.4  # Significant reduction for formal linguistic constructions
-            # Examples of appropriate article omission in formal contexts:
-            # "This constitutes failure" (not "This constitutes a failure")
-            # "The system requires access" (not "The system requires an access")
-            # "The process involves risk" (not "The process involves a risk")
-            # "This introduces compliance" (not "This introduces a compliance")
+            evidence_score -= self.config['missing_linguistic_weights']['formal_abstract_reduction']
         
-        # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
         evidence_score = self._apply_linguistic_clues_missing(evidence_score, noun_token, sentence)
-        
-        # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._apply_structural_clues_missing(evidence_score, noun_token, context)
-        
-        # === STEP 4: SEMANTIC CLUES (MACRO-LEVEL) ===
         evidence_score = self._apply_semantic_clues_missing(evidence_score, noun_token, text, context)
-        
-        # === STEP 5: FEEDBACK PATTERNS (LEARNING CLUES) ===
         evidence_score = self._apply_feedback_clues_missing(evidence_score, noun_token, context)
         
-        return max(0.0, min(1.0, evidence_score))  # Clamp to valid range
+        return max(0.0, min(1.0, evidence_score))
 
     def _is_inline_list_item(self, noun_token, sentence, text: str, context: dict) -> bool:
-        """
-        Detect if a noun is the first word after an inline list marker.
-        
-        Uses regex to detect lines starting with:
-        - Hyphen/bullet: "- Configuration options"
-        - Asterisk: "* Database connections" 
-        - Numbers: "1. User authentication", "2) Setup process"
-        
-        Args:
-            noun_token: The noun token to check
-            sentence: Sentence containing the noun
-            text: Full document text
-            context: Document context
-            
-        Returns:
-            bool: True if noun follows an inline list marker
-        """
+        """Detect if a noun is the first word after an inline list marker."""
         import re
         
-        # Only check in paragraph blocks where inline lists commonly appear
         block_type = context.get('block_type', 'paragraph') if context else 'paragraph'
-        if block_type not in ['paragraph', 'section', 'admonition']:
+        if block_type not in self.config['block_types']['inline_list_containers']:
             return False
         
-        # Get the sentence text and find the noun's position within it
         sentence_text = sentence.text
         noun_start_in_sentence = noun_token.idx - sentence.start_char
         
         if noun_start_in_sentence < 0:
             return False
         
-        # Look at the text before the noun in the sentence
         text_before_noun = sentence_text[:noun_start_in_sentence].strip()
         
-        # Regex patterns for inline list markers
-        inline_list_patterns = [
-            r'^-\s+',           # "- Configuration"
-            r'^\*\s+',          # "* Database"
-            r'^\d+\.\s+',       # "1. User", "2. Admin"
-            r'^\d+\)\s+',       # "1) Setup", "2) Config"
-            r'^[a-zA-Z]\.\s+',  # "a. First", "A. Primary"
-            r'^[a-zA-Z]\)\s+',  # "a) Setup", "b) Config"
-            r'^[ivxlcdm]+\.\s+', # "i. First", "ii. Second" (roman numerals)
-            r'^[IVXLCDM]+\.\s+', # "I. Primary", "II. Secondary"
-        ]
-        
-        # Check if any pattern matches the beginning of the text before the noun
-        for pattern in inline_list_patterns:
+        for pattern in self.config['inline_list_patterns']:
             if re.match(pattern, text_before_noun, re.IGNORECASE):
-                # Additional check: ensure the noun is reasonably close to the list marker
-                # (within first few words after the marker)
                 remaining_text = re.sub(pattern, '', text_before_noun, count=1, flags=re.IGNORECASE).strip()
-                
-                # If there are no words or only 1-2 words between marker and noun, it's likely a list item
                 word_count_between = len(remaining_text.split()) if remaining_text else 0
                 
-                if word_count_between <= 2:  # Allow some words like "the new configuration"
+                if word_count_between <= self.config['inline_list_thresholds']['max_words_between']:
                     return True
         
-        # ENHANCED: Check the original text line containing this sentence
-        # spaCy may not include list markers in sentence.text, so we need to check the original line
         sentence_start = sentence.start_char
-        sentence_end = sentence.start_char + len(sentence_text)
-        
-        # Find the line containing this sentence in the original text
         lines_before_sentence = text[:sentence_start].split('\n')
         current_line_start = sentence_start - len(lines_before_sentence[-1]) if len(lines_before_sentence) > 1 else 0
         
-        # Find the end of the current line
         remaining_text = text[sentence_start:]
         next_newline = remaining_text.find('\n')
         current_line_end = sentence_start + (next_newline if next_newline != -1 else len(remaining_text))
         
-        # Extract the full line containing the sentence
         full_line = text[current_line_start:current_line_end].strip()
         
-        # Check if this full line starts with a list marker
-        for pattern in inline_list_patterns:
+        for pattern in self.config['inline_list_patterns']:
             if re.match(pattern, full_line, re.IGNORECASE):
-                # Check if noun appears early in the line after the marker
                 marker_match = re.match(pattern, full_line, re.IGNORECASE)
                 if marker_match:
                     text_after_marker = full_line[marker_match.end():].strip()
                     words_after_marker = text_after_marker.split()
                     
-                    # If noun is one of the first few words after the marker
                     noun_text = noun_token.text.lower()
                     if len(words_after_marker) > 0 and words_after_marker[0].lower() == noun_text:
                         return True
                     elif len(words_after_marker) > 1 and words_after_marker[1].lower() == noun_text:
-                        return True  # Allow for one word like "new" before the noun
+                        return True
                     elif len(words_after_marker) > 2 and words_after_marker[2].lower() == noun_text:
-                        return True  # Allow for two words like "new technical" before the noun
+                        return True
         
         return False
 
     def _is_formal_verb_abstract_noun_construction(self, noun_token, sentence) -> bool:
-        """
-        Detect formal verb + abstract noun constructions where articles are appropriately omitted.
-        
-        Analyzes the syntactic relationship between formal verbs and abstract nouns to identify
-        constructions where article omission is stylistically appropriate in formal writing.
-        
-        Examples of legitimate omission:
-        - "This constitutes failure" (formal legal/business language)
-        - "The system requires access" (technical specification)
-        - "The process involves risk" (formal assessment)
-        - "This introduces compliance" (regulatory language)
-        
-        Args:
-            noun_token: The noun token potentially missing an article
-            sentence: Sentence containing the noun
-            
-        Returns:
-            bool: True if noun is direct object of formal verb in abstract construction
-        """
+        """Detect formal verb + abstract noun constructions where articles are omitted."""
         if not noun_token or not hasattr(noun_token, 'head') or not hasattr(noun_token, 'dep_'):
             return False
         
-        # === FORMAL VERB PATTERNS ===
-        # List of formal verbs that often take abstract nouns without articles
-        formal_verbs = {
-            # Core formal verbs specified by user
-            'constitute', 'constitutes', 'constituting', 'constituted',
-            'introduce', 'introduces', 'introducing', 'introduced', 
-            'require', 'requires', 'requiring', 'required',
-            'involve', 'involves', 'involving', 'involved',
-            
-            # Extended formal verbs for broader coverage
-            'represent', 'represents', 'representing', 'represented',
-            'establish', 'establishes', 'establishing', 'established',
-            'demonstrate', 'demonstrates', 'demonstrating', 'demonstrated',
-            'ensure', 'ensures', 'ensuring', 'ensured',
-            'provide', 'provides', 'providing', 'provided',
-            'maintain', 'maintains', 'maintaining', 'maintained',
-            'achieve', 'achieves', 'achieving', 'achieved',
-            'facilitate', 'facilitates', 'facilitating', 'facilitated'
-        }
-        
-        # === ABSTRACT NOUN PATTERNS ===
-        # List of abstract nouns that often appear without articles in formal contexts
-        abstract_nouns = {
-            # Core abstract nouns specified by user
-            'failure', 'agreement', 'risk', 'access', 'compliance',
-            
-            # Extended abstract nouns for broader coverage
-            'success', 'progress', 'development', 'improvement', 'enhancement',
-            'security', 'stability', 'reliability', 'availability', 'performance',
-            'control', 'management', 'oversight', 'governance', 'supervision',
-            'consistency', 'compatibility', 'integration', 'implementation', 'deployment',
-            'validation', 'verification', 'authentication', 'authorization', 'approval',
-            'transparency', 'accountability', 'responsibility', 'liability', 'coverage',
-            'efficiency', 'effectiveness', 'productivity', 'scalability', 'flexibility',
-            'maintainability', 'sustainability', 'viability', 'functionality', 'capability'
-        }
-        
-        # === DEPENDENCY ANALYSIS ===
-        # Check if the noun is a direct object (dobj) of a formal verb
-        
         noun_text = noun_token.text.lower()
         
-        # First check if the noun is in our abstract noun list
-        if noun_text not in abstract_nouns:
+        if noun_text not in self.config['abstract_nouns']:
             return False
         
-        # Check if noun is direct object
-        if noun_token.dep_ != 'dobj':
+        if noun_token.dep_ != self.config['dependency_tags']['direct_object']:
             return False
         
-        # Get the head verb (the verb this noun is a direct object of)
         head_token = noun_token.head
         
         if not hasattr(head_token, 'lemma_') or not hasattr(head_token, 'pos_'):
             return False
         
-        # Check if head is a verb
-        if head_token.pos_ not in ['VERB', 'AUX']:
+        if head_token.pos_ not in [self.config['pos_tags']['verb'], self.config['pos_tags']['auxiliary']]:
             return False
         
-        # Check if the head verb is in our formal verb list
         head_lemma = head_token.lemma_.lower()
         head_text = head_token.text.lower()
         
-        if head_lemma in formal_verbs or head_text in formal_verbs:
+        if head_lemma in self.config['formal_verbs'] or head_text in self.config['formal_verbs']:
             return True
         
-        # === ADDITIONAL PATTERN CHECKS ===
-        # Check for passive constructions: "is required by", "was established through"
-        if (head_token.dep_ == 'auxpass' or head_token.dep_ == 'nsubjpass'):
-            # Look for formal verb patterns in passive voice
+        if (head_token.dep_ == self.config['dependency_tags']['auxiliary_passive'] or 
+            head_token.dep_ == self.config['dependency_tags']['passive_subject']):
             for token in sentence:
                 if (hasattr(token, 'lemma_') and 
-                    token.lemma_.lower() in formal_verbs and
-                    token.pos_ in ['VERB', 'AUX']):
+                    token.lemma_.lower() in self.config['formal_verbs'] and
+                    token.pos_ in [self.config['pos_tags']['verb'], self.config['pos_tags']['auxiliary']]):
                     return True
         
         return False
 
-    # === LINGUISTIC CLUES FOR INCORRECT A/AN USAGE ===
-
     def _apply_linguistic_clues_incorrect(self, evidence_score: float, article_token, next_token, sentence) -> float:
         """Apply linguistic analysis clues for incorrect a/an usage."""
-        
+        w = self.config['incorrect_linguistic_weights']
         word = next_token.text.lower()
         
-        # === COMMON WORDS WITH KNOWN PRONUNCIATION ===
-        # Words where the pronunciation is very well established
-        common_words_vowel_sound = {
-            'hour', 'honest', 'honor', 'heir', 'herb', 'api', 'fbi', 'html', 'sql', 'xml'
-        }
-        common_words_consonant_sound = {
-            'user', 'unique', 'university', 'unix', 'ubuntu', 'url', 'utility', 'one', 'once', 'european'
-        }
+        if word in self.config['common_words_vowel_sound'] or word in self.config['common_words_consonant_sound']:
+            evidence_score += w['common_word_boost']
         
-        if word in common_words_vowel_sound or word in common_words_consonant_sound:
-            evidence_score += 0.1  # Very clear pronunciation, high confidence in error
-        
-        # === TECHNICAL ABBREVIATIONS ===
-        # Technical abbreviations have more standardized pronunciations
         if word.isupper() and len(word) <= 5:
-            evidence_score += 0.1  # Technical abbreviations have clear pronunciations
+            evidence_score += w['abbreviation_boost']
         
-        # === PROPER NOUNS ===
-        # Proper nouns may have less standardized pronunciations
-        if next_token.pos_ == 'PROPN':
-            evidence_score -= 0.1  # Proper nouns might have variant pronunciations
+        if next_token.pos_ == self.config['pos_tags']['proper_noun']:
+            evidence_score -= w['proper_noun_reduction']
         
-        # === FOREIGN WORDS ===
-        # Check for potential foreign words that might have uncertain pronunciation
-        if next_token.ent_type_ in ['LANGUAGE', 'NORP']:
-            evidence_score -= 0.2  # Foreign/cultural terms might have variant pronunciations
+        if next_token.ent_type_ in self.config['entity_types']['foreign']:
+            evidence_score -= w['foreign_reduction']
         
-        # === CONTEXT WITHIN SENTENCE ===
-        # Article errors in certain grammatical positions are more problematic
-        if article_token.dep_ == 'det' and next_token.dep_ == 'nsubj':
-            evidence_score += 0.1  # Subject position more noticeable
-        elif article_token.dep_ == 'det' and next_token.dep_ == 'dobj':
-            evidence_score += 0.05  # Object position somewhat noticeable
+        if article_token.dep_ == self.config['dependency_tags']['determiner'] and next_token.dep_ == self.config['dependency_tags']['subject']:
+            evidence_score += w['subject_position_boost']
+        elif article_token.dep_ == self.config['dependency_tags']['determiner'] and next_token.dep_ == self.config['dependency_tags']['direct_object']:
+            evidence_score += w['object_position_boost']
         
         return evidence_score
 
     def _apply_structural_clues_incorrect(self, evidence_score: float, article_token, next_token, context: dict) -> float:
-        """Apply document structure-based clues for incorrect a/an usage."""
-        
+        """Apply document structure clues for incorrect a/an usage."""
         if not context:
             return evidence_score
         
+        w = self.config['incorrect_structural_weights']
         block_type = context.get('block_type', 'paragraph')
         
-        # === FORMAL WRITING CONTEXTS ===
-        # In formal contexts, article errors are more problematic
-        if block_type in ['heading', 'title']:
-            evidence_score += 0.2  # Headings are highly visible
+        if block_type in self.config['block_types']['headings']:
+            evidence_score += w['heading_boost']
         elif block_type == 'paragraph':
-            evidence_score += 0.1  # Body text somewhat visible
-        
-        # === TECHNICAL CONTEXTS ===
-        # In technical contexts, precision is important but tolerance may be higher
-        if block_type in ['code_block', 'literal_block']:
-            evidence_score -= 0.3  # Code comments more forgiving
+            evidence_score += w['paragraph_boost']
+        elif block_type in self.config['block_types']['code']:
+            evidence_score -= w['code_block_reduction']
         elif block_type == 'inline_code':
-            evidence_score -= 0.2  # Inline technical content
-        
-        # === LISTS AND TABLES ===
-        # Abbreviated contexts may be more tolerant
-        if block_type in ['ordered_list_item', 'unordered_list_item']:
-            evidence_score -= 0.1  # List items often abbreviated
-        elif block_type in ['table_cell', 'table_header']:
-            evidence_score -= 0.2  # Tables often use abbreviated language
-        
-        # === ADMONITIONS ===
-        # Notes and warnings should be clear
-        if block_type == 'admonition':
+            evidence_score -= w['inline_code_reduction']
+        elif block_type in self.config['block_types']['lists']:
+            evidence_score -= w['list_reduction']
+        elif block_type in self.config['block_types']['tables']:
+            evidence_score -= w['table_reduction']
+        elif block_type == 'admonition':
             admonition_type = context.get('admonition_type', '').upper()
-            if admonition_type in ['IMPORTANT', 'WARNING', 'CAUTION']:
-                evidence_score += 0.1  # Important messages should be clear
+            if admonition_type in self.config['admonition_types']['important']:
+                evidence_score += w['important_admonition_boost']
         
         return evidence_score
 
     def _apply_semantic_clues_incorrect(self, evidence_score: float, article_token, next_token, text: str, context: dict) -> float:
         """Apply semantic and content-type clues for incorrect a/an usage."""
-        
         if not context:
             return evidence_score
         
+        w = self.config['incorrect_semantic_weights']
         content_type = context.get('content_type', 'general')
         
-        # === CONTENT TYPE ANALYSIS ===
-        # Different content types have different tolerance for errors
         if content_type == 'technical':
-            evidence_score -= 0.1  # Technical writing somewhat more forgiving of minor errors
+            evidence_score -= w['technical_reduction']
         elif content_type == 'academic':
-            evidence_score += 0.2  # Academic writing expects precision
+            evidence_score += w['academic_boost']
         elif content_type == 'legal':
-            evidence_score += 0.3  # Legal writing demands precision
+            evidence_score += w['legal_boost']
         elif content_type == 'marketing':
-            evidence_score -= 0.2  # Marketing more focused on message than perfection
+            evidence_score -= w['marketing_reduction']
         elif content_type == 'api':
-            evidence_score -= 0.1  # API docs focus on functionality
+            evidence_score -= w['api_reduction']
         
-        # === AUDIENCE CONSIDERATIONS ===
         audience = context.get('audience', 'general')
-        if audience in ['academic', 'legal', 'professional']:
-            evidence_score += 0.1  # Professional audiences expect accuracy
+        if audience in self.config['content_types']['formal']:
+            evidence_score += w['academic_audience_boost']
         elif audience in ['developer', 'technical']:
-            evidence_score -= 0.05  # Technical audiences may be more forgiving of minor errors
+            evidence_score -= w['technical_audience_reduction']
         elif audience in ['beginner', 'student']:
-            evidence_score += 0.1  # Educational content should model correct usage
+            evidence_score += w['beginner_audience_boost']
         
-        # === DOCUMENT FORMALITY ===
-        # Check for formality indicators in the surrounding text
         formal_indicators = self._count_formal_indicators(text)
-        if formal_indicators > 5:  # High formality
-            evidence_score += 0.1
-        elif formal_indicators < 2:  # Low formality
-            evidence_score -= 0.1
+        if formal_indicators > w['formality_high_threshold']:
+            evidence_score += w['high_formality_boost']
+        elif formal_indicators < w['formality_low_threshold']:
+            evidence_score -= w['low_formality_reduction']
         
         return evidence_score
 
     def _apply_feedback_clues_incorrect(self, evidence_score: float, article_token, next_token, context: dict) -> float:
         """Apply feedback patterns for incorrect a/an usage."""
-        
-        # Load cached feedback patterns
+        w = self.config['feedback_weights']
         feedback_patterns = self._get_cached_feedback_patterns('articles')
         
         word = next_token.text.lower()
         article = article_token.text.lower()
         
-        # Check if this specific word has consistent feedback
         word_feedback = feedback_patterns.get('word_article_corrections', {})
         if word in word_feedback:
             expected_article = word_feedback[word]
             if article != expected_article:
-                evidence_score += 0.2  # Consistent user feedback indicates this is wrong
+                evidence_score += w['word_correction_boost']
             else:
-                evidence_score -= 0.1  # This combination is typically accepted
+                evidence_score -= w['word_accepted_reduction']
         
-        # Check for common correction patterns
-        common_corrections = feedback_patterns.get('common_article_corrections', set())
         error_pattern = f"{article} {word}"
-        if error_pattern in common_corrections:
-            evidence_score += 0.3  # This is a commonly corrected error
+        if error_pattern in feedback_patterns.get('common_article_corrections', set()):
+            evidence_score += w['common_correction_boost']
         
         return evidence_score
-
-    # === LINGUISTIC CLUES FOR MISSING ARTICLES ===
 
     def _apply_linguistic_clues_missing(self, evidence_score: float, noun_token, sentence) -> float:
         """Apply linguistic analysis clues for missing articles."""
+        w = self.config['missing_linguistic_weights']
         
-        # === GRAMMATICAL ROLE ANALYSIS ===
-        # Subjects and objects usually need articles more than other roles
-        if noun_token.dep_ == 'nsubj':
-            evidence_score += 0.2  # Subjects usually need articles
-        elif noun_token.dep_ == 'dobj':
-            evidence_score += 0.1  # Direct objects often need articles
-        elif noun_token.dep_ == 'pobj':
-            evidence_score += 0.05  # Prepositional objects sometimes need articles
-        elif noun_token.dep_ in ['compound', 'npadvmod']:
-            evidence_score -= 0.3  # Compound terms often don't need articles
+        if noun_token.dep_ == self.config['dependency_tags']['subject']:
+            evidence_score += w['subject_boost']
+        elif noun_token.dep_ == self.config['dependency_tags']['direct_object']:
+            evidence_score += w['direct_object_boost']
+        elif noun_token.dep_ == self.config['dependency_tags']['prep_object']:
+            evidence_score += w['prep_object_boost']
+            
+            has_adj_modifier = any(child.dep_ == self.config['dependency_tags']['adjectival_modifier'] 
+                                  for child in noun_token.children)
+            
+            if not has_adj_modifier and noun_token.head.pos_ == 'ADP':
+                has_adj_modifier = any(child.dep_ == self.config['dependency_tags']['adjectival_modifier'] 
+                                      for child in noun_token.head.children)
+            
+            if has_adj_modifier:
+                evidence_score -= w['modified_prep_object_reduction']
         
-        # === COUNTABILITY ANALYSIS ===
-        # Use existing sophisticated countability detection
+        elif noun_token.dep_ in [self.config['dependency_tags']['compound'], 'npadvmod']:
+            evidence_score -= w['compound_reduction']
+        
         if self._is_uncountable(noun_token):
-            evidence_score -= 0.4  # Uncountable nouns often don't need articles
+            evidence_score -= w['uncountable_reduction']
         
-        # === TECHNICAL TERM ANALYSIS ===
-        # Technical terms often used without articles
         if self._is_technical_compound_phrase(noun_token, noun_token.doc):
-            evidence_score -= 0.3  # Technical compounds often don't need articles
+            evidence_score -= w['technical_compound_reduction']
         
         if self._is_technical_coordination(noun_token, noun_token.doc):
-            evidence_score -= 0.2  # Coordinated technical terms often don't need articles
+            evidence_score -= w['technical_coordination_reduction']
         
-        # === DEFINITENESS ANALYSIS ===
-        # Check if the noun refers to something specific vs. general
         if self._has_specific_reference(noun_token):
-            evidence_score += 0.2  # Specific references usually need 'the'
+            evidence_score += w['specific_reference_boost']
         elif self._has_generic_reference(noun_token):
-            evidence_score += 0.1  # Generic references may need 'a/an'
+            evidence_score += w['generic_reference_boost']
         
-        # === MASS NOUN CONTEXT ===
-        # Use existing mass noun context detection
         if self._is_mass_noun_context(noun_token):
-            evidence_score -= 0.2  # Mass noun contexts often don't need articles
+            evidence_score -= w['mass_noun_context_reduction']
         
         return evidence_score
 
-    def _apply_structural_clues_missing(self, evidence_score: float, noun_token, context: dict) -> float:
-        """Apply document structure-based clues for missing articles."""
+    def _is_complete_sentence_in_list(self, sent) -> bool:
+        """Determine if a list item contains a complete sentence or fragment."""
+        if not sent or len(sent) == 0:
+            return False
         
+        root_verb = None
+        has_subject = False
+        
+        for token in sent:
+            if token.dep_ == 'ROOT':
+                root_verb = token
+            if token.dep_ in [self.config['dependency_tags']['subject'], self.config['dependency_tags']['passive_subject']]:
+                has_subject = True
+        
+        if root_verb and root_verb.pos_ == self.config['pos_tags']['verb'] and root_verb.tag_ == self.config['pos_tags']['imperative'] and not has_subject:
+            return False
+        
+        if root_verb and root_verb.pos_ in [self.config['pos_tags']['noun'], self.config['pos_tags']['proper_noun']]:
+            return False
+        
+        if root_verb and root_verb.tag_ == self.config['pos_tags']['gerund']:
+            return False
+        
+        if root_verb and root_verb.pos_ in [self.config['pos_tags']['verb'], self.config['pos_tags']['auxiliary']]:
+            if root_verb.tag_ in self.config['pos_tags']['finite_verbs']:
+                if has_subject or root_verb.tag_ == self.config['pos_tags']['finite_verbs'][-1]:
+                    return True
+        
+        return False
+
+    def _apply_structural_clues_missing(self, evidence_score: float, noun_token, context: dict) -> float:
+        """Apply document structure clues for missing articles."""
         if not context:
             return evidence_score
         
+        w = self.config['missing_structural_weights']
         block_type = context.get('block_type', 'paragraph')
         
-        # === FORMAL WRITING CONTEXTS ===
-        # Formal contexts expect complete article usage
-        if block_type in ['heading', 'title']:
-            evidence_score -= 0.2  # Headings often omit articles for brevity
+        if block_type in self.config['block_types']['lists'][:2]:
+            sent = noun_token.sent
+            if len(sent) > 0:
+                first_token = sent[0]
+                if first_token.pos_ == self.config['pos_tags']['verb'] and first_token.tag_ == self.config['pos_tags']['imperative']:
+                    evidence_score -= w['procedural_list_imperative_reduction']
+        
+        if block_type in self.config['block_types']['headings']:
+            evidence_score -= w['heading_reduction']
         elif block_type == 'paragraph':
-            evidence_score += 0.1  # Body paragraphs usually need complete grammar
-        
-        # === TECHNICAL CONTEXTS ===
-        # Technical writing often omits articles for conciseness
-        if block_type in ['code_block', 'literal_block']:
-            evidence_score -= 0.4  # Code comments very abbreviated
+            evidence_score += w['paragraph_boost']
+        elif block_type in self.config['block_types']['code']:
+            evidence_score -= w['code_block_reduction']
         elif block_type == 'inline_code':
-            evidence_score -= 0.3  # Inline technical content abbreviated
-        
-        # === LISTS AND PROCEDURES ===
-        # Lists often omit articles for brevity
-        if block_type in ['ordered_list_item', 'unordered_list_item']:
-            evidence_score -= 0.3  # List items commonly abbreviated
+            evidence_score -= w['inline_code_reduction']
+        elif block_type in self.config['block_types']['lists']:
+            sent = noun_token.sent
+            is_complete_sentence = self._is_complete_sentence_in_list(sent)
             
-            # Nested lists even more abbreviated
-            if context.get('list_depth', 1) > 1:
-                evidence_score -= 0.1
-        
-        # === TABLES ===
-        # Tables use very abbreviated language
-        if block_type in ['table_cell', 'table_header']:
-            evidence_score -= 0.4  # Tables heavily abbreviated
-        
-        # === ADMONITIONS ===
-        # Admonitions may use abbreviated language
-        if block_type == 'admonition':
-            evidence_score -= 0.2  # Admonitions often abbreviated
+            if is_complete_sentence:
+                evidence_score += w['complete_sentence_list_boost']
+            else:
+                evidence_score -= w['fragment_list_reduction']
+                if context.get('list_depth', 1) > 1:
+                    evidence_score -= w['nested_list_reduction']
+        elif block_type in self.config['block_types']['tables']:
+            evidence_score -= w['table_reduction']
+        elif block_type == 'admonition':
+            evidence_score -= w['admonition_reduction']
         
         return evidence_score
 
     def _apply_semantic_clues_missing(self, evidence_score: float, noun_token, text: str, context: dict) -> float:
         """Apply semantic and content-type clues for missing articles."""
-        
         if not context:
             return evidence_score
         
+        w = self.config['missing_semantic_weights']
         content_type = context.get('content_type', 'general')
         
-        # === CONTENT TYPE ANALYSIS ===
-        # Technical content often omits articles
+        if content_type in self.config['content_types']['procedural']:
+            if noun_token.dep_ == self.config['dependency_tags']['prep_object']:
+                has_adj = any(child.dep_ == self.config['dependency_tags']['adjectival_modifier'] 
+                             for child in noun_token.children)
+                if has_adj:
+                    evidence_score -= w['procedural_modified_pobj_reduction']
+        
         if content_type == 'technical':
-            evidence_score -= 0.2  # Technical writing often omits articles
+            evidence_score -= w['technical_reduction']
         elif content_type == 'api':
-            evidence_score -= 0.3  # API documentation very concise
+            evidence_score -= w['api_reduction']
         elif content_type == 'procedural':
-            evidence_score -= 0.2  # Instructions often abbreviated
+            evidence_score -= w['procedural_reduction']
         elif content_type == 'academic':
-            evidence_score += 0.2  # Academic writing expects complete grammar
+            evidence_score += w['academic_boost']
         elif content_type == 'legal':
-            evidence_score += 0.1  # Legal writing fairly complete
+            evidence_score += w['legal_boost']
         elif content_type == 'marketing':
-            evidence_score -= 0.1  # Marketing may be more flexible
+            evidence_score -= w['marketing_reduction']
         
-        # === DOMAIN-SPECIFIC PATTERNS ===
         domain = context.get('domain', 'general')
-        if domain in ['software', 'engineering', 'devops']:
-            evidence_score -= 0.2  # Technical domains omit articles
+        if domain in self.config['content_types']['domains_abbreviated']:
+            evidence_score -= w['technical_domain_reduction']
         elif domain in ['documentation', 'tutorial']:
-            evidence_score -= 0.1  # Educational content somewhat abbreviated
+            evidence_score -= w['documentation_domain_reduction']
         
-        # === AUDIENCE CONSIDERATIONS ===
         audience = context.get('audience', 'general')
         if audience in ['developer', 'technical', 'expert']:
-            evidence_score -= 0.2  # Technical audiences expect abbreviated style
-        elif audience in ['academic', 'professional']:
-            evidence_score += 0.1  # Professional audiences expect complete grammar
+            evidence_score -= w['technical_audience_reduction']
+        elif audience in self.config['content_types']['formal']:
+            evidence_score += w['professional_audience_boost']
         elif audience in ['beginner', 'general']:
-            evidence_score += 0.2  # General audiences need complete grammar
+            evidence_score += w['general_audience_boost']
         
-        # === CONTENT TYPE SPECIFIC ANALYSIS ===
-        # Use helper methods to analyze content type
         if self._is_procedural_documentation(text):
-            evidence_score -= 0.3  # Instructions often omit articles for brevity
+            evidence_score -= w['procedural_docs_reduction']
         elif self._is_reference_documentation(text):
-            evidence_score -= 0.2  # Reference docs use abbreviated style
+            evidence_score -= w['reference_docs_reduction']
         
-        # === TECHNICAL TERM DENSITY ===
-        # High technical term density suggests abbreviated style is acceptable
         if self._has_high_technical_density(text):
-            evidence_score -= 0.2
+            evidence_score -= w['high_technical_density_reduction']
         
         return evidence_score
 
     def _apply_feedback_clues_missing(self, evidence_score: float, noun_token, context: dict) -> float:
         """Apply feedback patterns for missing articles."""
-        
-        # Load cached feedback patterns
+        w = self.config['feedback_weights']
         feedback_patterns = self._get_cached_feedback_patterns('articles')
         
         noun = noun_token.text.lower()
         
-        # Check if this noun is commonly used without articles
-        no_article_nouns = feedback_patterns.get('commonly_no_article_nouns', set())
-        if noun in no_article_nouns:
-            evidence_score -= 0.3  # Users consistently accept this without article
+        if noun in feedback_patterns.get('commonly_no_article_nouns', set()):
+            evidence_score -= w['no_article_accepted_reduction']
         
-        # Check if this noun is commonly flagged as missing article
-        missing_article_nouns = feedback_patterns.get('commonly_missing_article_nouns', set())
-        if noun in missing_article_nouns:
-            evidence_score += 0.3  # Users consistently add articles to this
+        if noun in feedback_patterns.get('commonly_missing_article_nouns', set()):
+            evidence_score += w['missing_article_boost']
         
-        # Check context-specific patterns
         block_type = context.get('block_type', 'paragraph') if context else 'paragraph'
         context_patterns = feedback_patterns.get(f'{block_type}_article_patterns', {})
         
         if noun in context_patterns.get('acceptable_without_article', set()):
-            evidence_score -= 0.2
+            evidence_score -= w['context_acceptable_reduction']
         elif noun in context_patterns.get('needs_article', set()):
-            evidence_score += 0.2
+            evidence_score += w['context_needs_boost']
         
         return evidence_score
 
-    # === HELPER METHODS ===
-
     def _has_specific_reference(self, noun_token) -> bool:
-        """Check if noun refers to something specific (might need 'the')."""
-        # Check for definite reference indicators
+        """Check if noun refers to something specific."""
         modifiers = [child.text.lower() for child in noun_token.children]
         
-        # Demonstratives indicate specific reference
-        if any(mod in ['this', 'that', 'these', 'those'] for mod in modifiers):
+        if any(mod in self.config['demonstratives'] for mod in modifiers):
             return True
         
-        # Superlatives indicate specific reference
-        if any(child.tag_ in ['JJS', 'RBS'] for child in noun_token.children):
+        if any(child.tag_ in self.config['pos_tags']['superlative'] for child in noun_token.children):
             return True
         
-        # Ordinals indicate specific reference
-        if any(child.like_num and any(ord_word in child.text.lower() for ord_word in ['first', 'second', 'third', 'last']) for child in noun_token.children):
+        if any(child.like_num and any(ord_word in child.text.lower() for ord_word in self.config['ordinal_words']) 
+               for child in noun_token.children):
             return True
         
         return False
 
     def _has_generic_reference(self, noun_token) -> bool:
-        """Check if noun refers to something generic (might need 'a/an')."""
-        # Check for generic reference patterns
-        if noun_token.dep_ == 'nsubj' and noun_token.head.lemma_ in ['be', 'become', 'seem']:
-            return True  # "X is a Y" pattern
+        """Check if noun refers to something generic."""
+        if noun_token.dep_ == self.config['dependency_tags']['subject'] and noun_token.head.lemma_ in self.config['copula_verbs']:
+            return True
         
-        # Check for comparison contexts
-        if any(child.lemma_ in ['like', 'such', 'similar'] for child in noun_token.ancestors):
+        if any(child.lemma_ in self.config['comparison_lemmas'] for child in noun_token.ancestors):
             return True
         
         return False
 
-    # Removed _has_high_technical_density - using base class utility
-
-    # Removed _is_procedural_documentation - using base class utility
-
-    # Removed _is_reference_documentation - using base class utility
-
     def _count_formal_indicators(self, text: str) -> int:
         """Count indicators of formal writing style."""
-        formal_indicators = [
-            'furthermore', 'moreover', 'consequently', 'therefore', 'nonetheless',
-            'nevertheless', 'additionally', 'specifically', 'particularly',
-            'respectively', 'accordingly', 'subsequently', 'aforementioned'
-        ]
-        
         text_lower = text.lower()
-        return sum(1 for indicator in formal_indicators if indicator in text_lower)
-
-    # Removed _get_cached_feedback_patterns - using base class utility
-
-    # === HELPER METHODS FOR SMART MESSAGING ===
+        return sum(1 for indicator in self.config['formal_indicators'] if indicator in text_lower)
 
     def _get_contextual_message_incorrect(self, article_token, next_token, evidence_score: float) -> str:
         """Generate context-aware error messages for incorrect a/an usage."""
-        
         correct_article = 'an' if self._starts_with_vowel_sound(next_token.text) else 'a'
+        thresholds = self.config['evidence_thresholds']
         
-        if evidence_score > 0.8:
+        if evidence_score > thresholds['incorrect_high']:
             return f"Incorrect article: Use '{correct_article}' before '{next_token.text}' (phonetic rule)."
-        elif evidence_score > 0.5:
+        elif evidence_score > thresholds['incorrect_medium']:
             return f"Consider using '{correct_article}' before '{next_token.text}' for standard pronunciation."
         else:
             return f"Article usage: '{correct_article}' is typically used before '{next_token.text}'."
 
     def _get_contextual_message_missing(self, noun_token, evidence_score: float) -> str:
         """Generate context-aware error messages for missing articles."""
+        thresholds = self.config['evidence_thresholds']
         
-        if evidence_score > 0.8:
+        if evidence_score > thresholds['missing_high']:
             return f"Missing article: Singular noun '{noun_token.text}' typically requires an article (a/an/the)."
-        elif evidence_score > 0.5:
+        elif evidence_score > thresholds['missing_medium']:
             return f"Consider adding an article before '{noun_token.text}' for clarity."
         else:
             return f"Article usage: '{noun_token.text}' might benefit from an article depending on context."
@@ -1114,34 +852,81 @@ class ArticlesRule(BaseLanguageRule):
 
     def _generate_smart_suggestions_missing(self, noun_token, evidence_score: float, context: dict) -> List[str]:
         """Generate context-aware suggestions for missing articles."""
-        
         suggestions = []
+        thresholds = self.config['evidence_thresholds']
         
-        # Base suggestion
         if self._has_specific_reference(noun_token):
             suggestions.append(f"Consider adding 'the' before '{noun_token.text}' for specific reference.")
         else:
             suggestions.append(f"Consider adding 'a/an/the' before '{noun_token.text}' as appropriate.")
         
-        # Context-specific advice
         if context:
             content_type = context.get('content_type', 'general')
             block_type = context.get('block_type', 'paragraph')
             
-            if content_type == 'technical' and block_type in ['ordered_list_item', 'unordered_list_item']:
+            if content_type == 'technical' and block_type in self.config['block_types']['lists']:
                 suggestions.append("Technical lists often omit articles, but consider your style guide.")
-            elif content_type in ['academic', 'formal']:
+            elif content_type in self.config['content_types']['formal']:
                 suggestions.append("Formal writing typically includes articles for completeness.")
             elif content_type == 'procedural':
                 suggestions.append("Instructions may omit articles for brevity, but clarity is important.")
         
-        # Evidence-based advice
-        if evidence_score < 0.3:
+        if evidence_score < thresholds['missing_low']:
             suggestions.append("This usage may be acceptable in your context, depending on style preferences.")
         elif evidence_score > 0.7:
             suggestions.append("Adding an article would improve grammatical completeness.")
         
         return suggestions
+
+    def _is_technical_value_or_keyword(self, noun_token, sentence) -> bool:
+        """Detect technical keywords and configuration values that don't need articles."""
+        doc = noun_token.doc
+        noun_text = noun_token.text.lower()
+        
+        if noun_text not in self.config['technical_keywords']:
+            return False
+        
+        if noun_token.i > 0 and noun_token.i < len(doc) - 1:
+            prev_token = doc[noun_token.i - 1]
+            next_token = doc[noun_token.i + 1]
+            
+            if (prev_token.text in self.config['technical_value_detection']['markup_chars']['open'] and 
+                next_token.text in self.config['technical_value_detection']['markup_chars']['close']):
+                return True
+        
+        lookback_limit = min(self.config['technical_value_detection']['lookback_limit'], noun_token.i)
+        for offset in range(1, lookback_limit + 1):
+            prev_token = doc[noun_token.i - offset]
+            prev_text = prev_token.text.lower()
+            
+            if prev_text in self.config['value_setting_patterns']:
+                return True
+            
+            if offset < lookback_limit:
+                prev_prev_token = doc[noun_token.i - offset - 1]
+                two_word_phrase = f"{prev_prev_token.text.lower()} {prev_text}"
+                if two_word_phrase in self.config['value_setting_patterns']:
+                    return True
+            
+            if offset < lookback_limit - 1:
+                prev_prev_token = doc[noun_token.i - offset - 1]
+                prev_prev_prev_token = doc[noun_token.i - offset - 2]
+                three_word_phrase = f"{prev_prev_prev_token.text.lower()} {prev_prev_token.text.lower()} {prev_text}"
+                if any(pattern in three_word_phrase for pattern in ['is set to', 'was set to', 'are set to', 'were set to']):
+                    return True
+        
+        if noun_token.dep_ in [self.config['dependency_tags']['attribute'], self.config['dependency_tags']['attribute_complement']]:
+            head = noun_token.head
+            if head.lemma_ in self.config['copula_verbs']:
+                return True
+        
+        if noun_token.i < len(doc) - 3:
+            if (doc[noun_token.i + 1].text == '(' and doc[noun_token.i + 3].text == ')'):
+                paren_word = doc[noun_token.i + 2].text.lower()
+                if paren_word in self.config['technical_keywords']:
+                    return True
+        
+        return False
 
     def _is_hyphenated_compound_element(self, token, doc) -> bool:
         """

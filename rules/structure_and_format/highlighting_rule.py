@@ -27,6 +27,10 @@ class HighlightingRule(BaseStructureRule):
         Analyzes highlighting violations using evidence-based scoring.
         Each potential violation gets nuanced evidence assessment for precision.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp or not context:
             return errors
@@ -156,6 +160,10 @@ class HighlightingRule(BaseStructureRule):
         if self._is_in_code_or_example_context(candidate, context):
             return 0.0
         
+        # Special guard: Technical terms in API/technical documentation
+        if self._is_technical_term_in_api_context(candidate, context):
+            return 0.0
+        
         # === STEP 1: DYNAMIC BASE EVIDENCE ASSESSMENT ===
         # REFINED: Set base score based on violation specificity
         evidence_score = self._get_highlighting_base_evidence_score(candidate, context)
@@ -165,6 +173,11 @@ class HighlightingRule(BaseStructureRule):
         
         # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
         ui_text = candidate['text'].lower()
+        
+        # NEGATIVE EVIDENCE: Lowercase UI elements are less likely to be literal UI labels
+        # UI labels are often capitalized ("Settings" vs. "settings")
+        if self._is_lowercase_ui_element(candidate['text']):
+            evidence_score -= 0.2  # Reduce evidence for lowercase UI elements
         
         # Specific UI element types have higher confidence
         high_confidence_elements = ['button', 'menu', 'dialog', 'window', 'tab']
@@ -203,12 +216,18 @@ class HighlightingRule(BaseStructureRule):
         candidates = []
         
         # METHOD 1: Generic UI element detection (existing logic)
-        ui_element_lemmas = {"button", "menu", "window", "dialog", "tab", "field", "checkbox", "link", "icon", "list", "panel", "pane"}
+        ui_element_lemmas = {"button", "menu", "window", "dialog", "tab", "field", "checkbox", "link", "icon", "list", "panel", "pane", "settings", "option", "preference"}
 
         for token in doc:
             # Linguistic Anchor: A UI element is often a noun phrase ending with a UI keyword,
             # especially when it's the object of an imperative verb like "Click" or "Select".
             if token.lemma_ in ui_element_lemmas and token.pos_ == 'NOUN':
+                
+                # GUARD: Check if this token is part of a possessive construction
+                # Example: "the connection's settings" - this is a concept, not a literal UI label
+                if self._is_possessive_construction(token):
+                    continue  # Skip possessive constructions
+                
                 # Check if the head is an imperative verb
                 if token.head.pos_ == 'VERB' and token.head.tag_ == 'VB':
                     # Reconstruct the full noun phrase (e.g., "the Save button")
@@ -236,7 +255,8 @@ class HighlightingRule(BaseStructureRule):
                                 'sentence': sentence_text,
                                 'sentence_index': sentence_index,
                                 'ui_type': token.lemma_,
-                                'imperative_verb': token.head.lemma_
+                                'imperative_verb': token.head.lemma_,
+                                'token': token  # Store token for further analysis
                             })
         
         # METHOD 2: Specific UI label detection from YAML configuration
@@ -272,6 +292,18 @@ class HighlightingRule(BaseStructureRule):
                     # Find the actual case-preserved text
                     actual_text = doc.text[match.start():match.end()]
                     
+                    # GUARD: Check for possessive construction in the surrounding context
+                    # Get the token at this position to check possessive relationship
+                    match_token = None
+                    for token in doc:
+                        if token.idx <= match.start() < token.idx + len(token.text):
+                            match_token = token
+                            break
+                    
+                    # Skip if this is part of a possessive construction
+                    if match_token and self._is_possessive_construction(match_token):
+                        continue
+                    
                     # Find which sentence this belongs to
                     for sent_idx, sent in enumerate(doc.sents):
                         if sent.start_char <= match.start() < sent.end_char:
@@ -282,7 +314,8 @@ class HighlightingRule(BaseStructureRule):
                                 'sentence_index': sent_idx,
                                 'ui_type': 'specific_label',
                                 'label_category': label_config.get('category', 'ui_label'),
-                                'evidence_base': label_config.get('evidence', 0.8)
+                                'evidence_base': label_config.get('evidence', 0.8),
+                                'token': match_token  # Store token for further analysis
                             })
                             break
         
@@ -325,6 +358,61 @@ class HighlightingRule(BaseStructureRule):
             return True
         
         return False
+    
+    def _is_technical_term_in_api_context(self, candidate: Dict[str, Any], context: Dict[str, Any]) -> bool:
+        """
+        Check if the candidate is a technical term in API/technical documentation context.
+        
+        In API docs, terms like "settings", "options", "preferences" are often parameter
+        names or object properties, not literal UI labels.
+        
+        Args:
+            candidate: The UI element candidate
+            context: Document context
+            
+        Returns:
+            bool: True if this is a technical term in API/technical context
+        """
+        if not context:
+            return False
+        
+        content_type = context.get('content_type', '')
+        
+        # Only apply in API, technical, or reference documentation
+        if content_type not in ['api', 'technical', 'reference', 'specification']:
+            return False
+        
+        ui_text = candidate['text'].lower()
+        sentence = candidate['sentence'].lower()
+        
+        # Technical terms that are often parameters/properties in API docs
+        technical_ui_terms = ['settings', 'options', 'preferences', 'configuration', 
+                             'parameters', 'properties', 'attributes']
+        
+        # Check if the term is a known technical term
+        is_technical_term = any(term in ui_text for term in technical_ui_terms)
+        
+        if not is_technical_term:
+            return False
+        
+        # Additional checks: Technical indicators in the sentence
+        technical_indicators = [
+            'object', 'parameter', 'property', 'attribute', 'field', 'value',
+            'api', 'endpoint', 'method', 'function', 'contains', 'returns',
+            'json', 'xml', 'data', 'schema', 'type', 'interface'
+        ]
+        
+        has_technical_context = any(indicator in sentence for indicator in technical_indicators)
+        
+        # If it's a technical term AND there are technical indicators, filter it out
+        if has_technical_context:
+            return True
+        
+        # Also filter if it's lowercase (not a proper UI label)
+        if self._is_lowercase_ui_element(candidate['text']):
+            return True
+        
+        return False
 
     def _has_specific_ui_name(self, ui_text: str) -> bool:
         """Check if UI element has a specific name or label."""
@@ -340,6 +428,72 @@ class HighlightingRule(BaseStructureRule):
         imperative_verbs = ['click', 'select', 'choose', 'press', 'tap', 'open', 'close']
         verb = candidate.get('imperative_verb', '').lower()
         return verb in imperative_verbs
+    
+    def _is_possessive_construction(self, token) -> bool:
+        """
+        Check if token is part of a possessive construction.
+        
+        A literal UI label is almost never possessive. For example:
+        - "the connection's settings" → possessive, refers to a concept
+        - "Click the Settings button" → not possessive, refers to a literal UI element
+        
+        Args:
+            token: spaCy token to check
+            
+        Returns:
+            bool: True if the token is part of a possessive construction
+        """
+        # Check if any token in the dependency tree is a possessive marker
+        # Example: "connection's settings" has 'poss' dependency
+        for child in token.children:
+            if child.dep_ == 'poss':
+                return True
+        
+        # Check if the token's head has a possessive relationship
+        if token.head.dep_ == 'poss':
+            return True
+        
+        # Check for possessive markers in the subtree
+        for ancestor in token.ancestors:
+            if ancestor.dep_ == 'poss':
+                return True
+        
+        return False
+    
+    def _is_lowercase_ui_element(self, ui_text: str) -> bool:
+        """
+        Check if UI element is entirely lowercase.
+        
+        UI labels are often capitalized ("Settings" vs. "settings").
+        If the entire phrase is lowercase, it's more likely to be a concept
+        than a literal UI label.
+        
+        Args:
+            ui_text: The UI element text to check
+            
+        Returns:
+            bool: True if the UI element is entirely lowercase
+        """
+        # Remove articles and determiners for checking
+        words = ui_text.split()
+        
+        # Filter out articles and determiners
+        content_words = [w for w in words if w.lower() not in ['the', 'a', 'an', 'this', 'that']]
+        
+        if not content_words:
+            return True
+        
+        # Check if all content words are lowercase
+        for word in content_words:
+            # Skip if the word contains special characters (might be technical)
+            if any(char in word for char in ['_', '-', '/', '\\', '.']):
+                continue
+            
+            # Check if the word has any uppercase letter
+            if any(char.isupper() for char in word):
+                return False
+        
+        return True
 
     def _is_span_highlighted(self, node, start_char: int, end_char: int, style: str) -> bool:
         """

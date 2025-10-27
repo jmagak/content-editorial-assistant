@@ -48,6 +48,10 @@ class CommandsRule(BaseTechnicalRule):
         3. Apply zero false positive guards specific to command analysis
         4. Use evidence-aware messaging and suggestions
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -70,8 +74,8 @@ class CommandsRule(BaseTechnicalRule):
                 error = self._create_error(
                     sentence=issue['sentence'],
                     sentence_index=issue['sentence_index'],
-                    message=self._generate_evidence_aware_message(issue, evidence_score, "command"),
-                    suggestions=self._generate_evidence_aware_suggestions(issue, evidence_score, context, "command"),
+                    message=self._generate_command_specific_message(issue, evidence_score),
+                    suggestions=self._generate_command_specific_suggestions(issue, evidence_score, context),
                     severity='low' if evidence_score < 0.7 else 'medium',
                     text=text,
                     context=context,
@@ -210,24 +214,46 @@ class CommandsRule(BaseTechnicalRule):
         Uses YAML-based configuration for legitimate patterns.
         """
         
-        # === NEW LINGUISTIC GUARD: Check for clear verb patterns first. ===
-        # This prevents flagging common words when they are used as verbs.
-
-        # GUARD A: Check for modal auxiliary verbs (e.g., "will find", "can run").
-        # If a command word is governed by an auxiliary verb, it's being used as a verb.
-        if any(child.dep_ == 'aux' and child.pos_ == 'AUX' for child in token.children):
-            return True  # Example: "you 'll find..." -> 'll (will) is an aux of find.
-
-        # GUARD B: Check the subject of the verb. Commands are imperative and don't
-        # typically have subjects like "you", "we", or "they" in technical prose.
-        subject = None
-        for child in token.children:
-            if child.dep_ == 'nsubj':
-                subject = child
-                break
+        # === LINGUISTIC GUARD: Selective protection for common English verbs ===
+        # These guards only apply to common English verbs that happen to be command names.
+        # Git-specific commands (fork, clone, commit, push, etc.) should ALWAYS be flagged as verbs.
         
-        if subject and subject.lemma_.lower() in ['you', 'we', 'they', 'i', 'he', 'she']:
-            return True  # Example: "You run the script.", "We find the results."
+        # List of commands that are ONLY technical (not common English verbs)
+        git_specific_commands = {'fork', 'clone', 'commit', 'push', 'pull', 'merge', 'rebase', 
+                                'checkout', 'stash', 'fetch', 'revert', 'cherry-pick'}
+        sql_specific_commands = {'select', 'insert', 'update', 'delete'}
+        unix_specific_commands = {'grep', 'awk', 'sed', 'chmod', 'chown', 'tar'}
+        
+        technical_only_commands = git_specific_commands | sql_specific_commands | unix_specific_commands
+        
+        # If this is a technical-only command, DO NOT apply the protective guards
+        # These should ALWAYS be flagged when used as verbs per IBM Style Guide
+        is_technical_command = command_word.lower() in technical_only_commands
+        
+        # Only apply protective guards for common English verbs (find, sort, run, etc.)
+        if not is_technical_command:
+            # GUARD 0: Check for gerunds in parallel lists (e.g., "creating, updating, and deploying")
+            if token.tag_ == 'VBG':
+                is_in_coordination = (
+                    token.dep_ == 'conj' or
+                    any(child.dep_ == 'conj' for child in token.children)
+                )
+                if is_in_coordination:
+                    return True
+
+            # GUARD A: Check for modal auxiliary verbs (e.g., "will find", "can run")
+            if any(child.dep_ == 'aux' and child.pos_ == 'AUX' for child in token.children):
+                return True
+
+            # GUARD B: Check the subject of the verb for common verbs
+            subject = None
+            for child in token.children:
+                if child.dep_ == 'nsubj':
+                    subject = child
+                    break
+            
+            if subject and subject.lemma_.lower() in ['you', 'we', 'they', 'i', 'he', 'she']:
+                return True  # Example: "You run the script.", "We find the results."
 
         # ... existing YAML-based logic follows ...
         sent_text = sentence_obj.text.lower()
@@ -424,3 +450,109 @@ class CommandsRule(BaseTechnicalRule):
             evidence_score += 0.1  # These are clearly technical commands
         
         return evidence_score
+    
+    # === COMMAND-SPECIFIC MESSAGING ===
+    
+    def _generate_command_specific_message(self, issue: Dict[str, Any], evidence_score: float) -> str:
+        """
+        Generate IBM Style Guide compliant message for command-as-verb violations.
+        
+        IBM Style Guide: "Do not use a command name as a verb."
+        This rule detects when commands are used as verbs and suggests rephrasing.
+        """
+        command_word = issue.get('command_word', '')
+        flagged_text = issue.get('text', '')
+        
+        if evidence_score > 0.8:
+            # High confidence - direct guidance
+            return f"Avoid using command name '{command_word}' as a verb. IBM Style Guide: 'Do not use a command name as a verb.' Rephrase to use '{command_word}' as a noun instead."
+        elif evidence_score > 0.5:
+            # Medium confidence - balanced suggestion
+            return f"Consider rephrasing to avoid using '{command_word}' as a verb. Use the command name as a noun for clearer technical writing."
+        else:
+            # Low confidence - gentle suggestion
+            return f"'{flagged_text}' appears to use a command name as a verb. Consider rephrasing if this refers to the command."
+    
+    def _generate_command_specific_suggestions(self, issue: Dict[str, Any], evidence_score: float, context: Dict[str, Any]) -> List[str]:
+        """
+        Generate IBM Style Guide compliant suggestions for command-as-verb violations.
+        
+        Provides specific rephrasing examples that use the command as a noun.
+        """
+        command_word = issue.get('command_word', '')
+        flagged_text = issue.get('text', '')
+        suggestions = []
+        
+        # Mapping of common command verbs to noun-based alternatives
+        command_rephrasings = {
+            'clone': {
+                'verb_examples': ['cloned', 'cloning', 'clone'],
+                'noun_alternatives': [
+                    f"Instead of 'you have {flagged_text}', use 'you have created a clone of'",
+                    f"Instead of '{flagged_text} the repository', use 'create a clone of the repository'",
+                    "Use 'Use the clone command to...' or 'Create a clone by...'",
+                    "Example: 'You have already created a clone of the repository' (not 'cloned')"
+                ]
+            },
+            'fork': {
+                'verb_examples': ['forked', 'forking', 'fork'],
+                'noun_alternatives': [
+                    f"Instead of 'you have {flagged_text}', use 'you have created a fork of'",
+                    f"Instead of '{flagged_text} the repository', use 'create a fork of the repository'",
+                    "Example: 'You have already created a fork of the repository' (not 'forked')"
+                ]
+            },
+            'commit': {
+                'verb_examples': ['committed', 'committing', 'commit'],
+                'noun_alternatives': [
+                    f"Instead of '{flagged_text} the changes', use 'create a commit with the changes'",
+                    f"Instead of 'you {flagged_text}', use 'you created a commit' or 'use the commit command'",
+                    "Example: 'Use the commit command to save your changes'"
+                ]
+            },
+            'push': {
+                'verb_examples': ['pushed', 'pushing', 'push'],
+                'noun_alternatives': [
+                    f"Instead of '{flagged_text} the changes', use 'use the push command for the changes'",
+                    f"Instead of 'you {flagged_text}', use 'you used the push command'",
+                    "Example: 'Use the push command to upload your commits'"
+                ]
+            },
+            'pull': {
+                'verb_examples': ['pulled', 'pulling', 'pull'],
+                'noun_alternatives': [
+                    f"Instead of '{flagged_text} the changes', use 'use the pull command to get the changes'",
+                    "Example: 'Use the pull command to update your local repository'"
+                ]
+            },
+            'merge': {
+                'verb_examples': ['merged', 'merging', 'merge'],
+                'noun_alternatives': [
+                    f"Instead of '{flagged_text} the branches', use 'perform a merge of the branches'",
+                    "Example: 'Perform a merge using the merge command'"
+                ]
+            },
+            'deploy': {
+                'verb_examples': ['deployed', 'deploying', 'deploy'],
+                'noun_alternatives': [
+                    f"Instead of '{flagged_text} the application', use 'create a deployment of the application'",
+                    "Example: 'Create a deployment using the deploy command'"
+                ]
+            }
+        }
+        
+        # Get rephrasing suggestions for this specific command
+        if command_word in command_rephrasings:
+            alternatives = command_rephrasings[command_word]['noun_alternatives']
+            suggestions.extend(alternatives[:3])  # Limit to 3 most relevant
+        else:
+            # Generic suggestions for commands not in the mapping
+            suggestions.append(f"Rephrase to use '{command_word}' as a noun, not a verb")
+            suggestions.append(f"Example: 'Use the {command_word} command' instead of '{flagged_text}'")
+            suggestions.append(f"Example: 'Create a {command_word}' instead of '{flagged_text}'")
+        
+        # Add context-specific guidance
+        if evidence_score > 0.7:
+            suggestions.append("IBM Style Guide: Command names should be nouns, not verbs, in documentation")
+        
+        return suggestions[:5]  # Limit to 5 suggestions total

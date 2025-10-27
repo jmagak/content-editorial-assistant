@@ -40,6 +40,10 @@ class PeriodsRule(BasePunctuationRule):
         - Missing periods at sentence endings
         - Context-aware period rules for different content types
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         context = context or {}
         
@@ -76,7 +80,7 @@ class PeriodsRule(BasePunctuationRule):
             errors.extend(self._analyze_duplicate_periods(doc, text, context))
             
             # NEW: Analyze unnecessary periods in headings and lists
-            errors.extend(self._analyze_unnecessary_periods(doc, text, context))
+            errors.extend(self._analyze_unnecessary_periods(doc, text, context, nlp))
             
             # NEW: Analyze missing periods at sentence endings
             errors.extend(self._analyze_missing_periods(doc, text, context))
@@ -248,7 +252,7 @@ class PeriodsRule(BasePunctuationRule):
         
         return errors
 
-    def _analyze_unnecessary_periods(self, doc: 'Doc', text: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _analyze_unnecessary_periods(self, doc: 'Doc', text: str, context: Dict[str, Any], nlp) -> List[Dict[str, Any]]:
         """Analyze text for unnecessary periods in headings and lists."""
         errors = []
         
@@ -257,7 +261,7 @@ class PeriodsRule(BasePunctuationRule):
         # Check headings for unnecessary periods
         if block_type == 'heading':
             if text.strip().endswith('.'):
-                evidence_score = self._calculate_unnecessary_period_evidence('heading', text, context)
+                evidence_score = self._calculate_unnecessary_period_evidence('heading', text, context, nlp)
                 
                 if evidence_score > 0.1:
                     errors.append(self._create_error(
@@ -278,7 +282,7 @@ class PeriodsRule(BasePunctuationRule):
         elif block_type in ['ordered_list_item', 'unordered_list_item']:
             stripped_text = text.strip()
             if stripped_text.endswith('.'):
-                evidence_score = self._calculate_unnecessary_period_evidence('list_item', text, context)
+                evidence_score = self._calculate_unnecessary_period_evidence('list_item', text, context, nlp)
                 
                 if evidence_score > 0.1:
                     errors.append(self._create_error(
@@ -337,6 +341,36 @@ class PeriodsRule(BasePunctuationRule):
 
     # === ENHANCED EVIDENCE CALCULATION ===
     
+    def _is_complete_sentence(self, text: str, nlp) -> bool:
+        """
+        Checks if a given string is a grammatically complete sentence.
+        A complete sentence must have a subject and a main verb (predicate).
+        Handles passive voice and complex structures.
+        """
+        if not text:
+            return False
+        
+        doc = nlp(text.strip())
+        
+        # Ensure it's parsed as a single sentence
+        if len(list(doc.sents)) > 1:
+            return True  # If spaCy thinks it's multiple sentences, it's definitely complete enough.
+        
+        has_subject = False
+        has_root_verb = False
+        
+        for token in doc:
+            if "subj" in token.dep_:
+                has_subject = True
+            if token.dep_ == "ROOT" and token.pos_ == "VERB":
+                has_root_verb = True
+        
+        # Handle passive voice where subject might be `nsubjpass`
+        if not has_subject:
+            has_subject = any(t.dep_ == 'nsubjpass' for t in doc)
+        
+        return has_subject and has_root_verb
+    
     def _calculate_duplicate_periods_evidence(self, match, text: str, context: Dict[str, Any]) -> float:
         """Calculate evidence for duplicate period violations."""
         # === SURGICAL ZERO FALSE POSITIVE GUARDS ===
@@ -353,7 +387,7 @@ class PeriodsRule(BasePunctuationRule):
         # Double periods are almost always errors in standard text
         return max(0.0, min(1.0, evidence_score))
 
-    def _calculate_unnecessary_period_evidence(self, location_type: str, text: str, context: Dict[str, Any]) -> float:
+    def _calculate_unnecessary_period_evidence(self, location_type: str, text: str, context: Dict[str, Any], nlp) -> float:
         """Calculate evidence for unnecessary period violations."""
         # === SURGICAL ZERO FALSE POSITIVE GUARDS ===
         if context.get('block_type') in ['code_block', 'inline_code', 'literal_block']:
@@ -366,7 +400,11 @@ class PeriodsRule(BasePunctuationRule):
         if location_type == 'heading':
             evidence_score = 0.7  # Good evidence - headings usually don't end with periods
         elif location_type == 'list_item':
-            # Check if it's a complete sentence
+            # === WORLD-CLASS GUARD: Check if the list item is a complete sentence ===
+            if self._is_complete_sentence(text, nlp):
+                return 0.0  # It's a full sentence, so the period is correct. Suppress error.
+            
+            # If it's a fragment, proceed with evidence calculation.
             word_count = len(text.strip().split())
             if word_count <= 3:
                 evidence_score = 0.8  # Strong evidence for short items
@@ -397,6 +435,15 @@ class PeriodsRule(BasePunctuationRule):
         if sentence_text.endswith((':', ';', '-', ')', ']')):
             return 0.0
         
+        # ZERO FALSE POSITIVE GUARD 7: URLs, Commands, and Technical Content
+        if self._is_technical_content_not_prose(sent, sentence_text, context):
+            return 0.0  # Technical content doesn't require prose punctuation
+        
+        # CRITICAL GUARD: Check if this is a list item fragment
+        # List fragments (non-sentences) should not require periods
+        if self._is_list_item_fragment(sent, context):
+            return 0.0  # Fragments don't need periods
+        
         # === STEP 1: BASE EVIDENCE ASSESSMENT ===
         evidence_score = 0.6  # Medium evidence for missing periods
         
@@ -419,6 +466,221 @@ class PeriodsRule(BasePunctuationRule):
         return max(0.0, min(1.0, evidence_score))
 
     # === HELPER METHODS ===
+    
+    def _is_technical_content_not_prose(self, sent: 'Span', sentence_text: str, context: Dict[str, Any]) -> bool:
+        """
+        Detect if this is technical content (URL, command, path, code) that should not be
+        treated as prose requiring a period.
+        
+        Technical content includes:
+        - URLs (http://, https://, ftp://, etc.)
+        - Shell commands ($ ..., # ..., > ...)
+        - File paths (/path/to/file, C:\\path, ./relative, ~/home)
+        - Code wrapped in backticks
+        - Technical identifiers with special syntax
+        
+        Returns True if this is pure technical content, False if it's prose.
+        """
+        import re
+        
+        # Strip leading/trailing whitespace for analysis
+        text_stripped = sentence_text.strip()
+        text_lower = text_stripped.lower()
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # GUARD 1: URL Protocols
+        # ─────────────────────────────────────────────────────────────────────
+        url_protocols = [
+            'http://', 'https://', 'ftp://', 'ftps://', 'ssh://', 'git://',
+            'file://', 'mailto:', 'tel:', 'ws://', 'wss://'
+        ]
+        
+        # Check if sentence STARTS with a URL (standalone URL line)
+        if any(text_lower.startswith(protocol) for protocol in url_protocols):
+            return True
+        
+        # Check if entire sentence is a URL (with potential wrapping chars)
+        # Pattern: optional punctuation + protocol + rest of URL
+        url_pattern = r'^[<\(\[\{]?((?:https?|ftp|git|ssh)://[^\s\)\]\}>]+)[>\)\]\}]?$'
+        if re.match(url_pattern, text_stripped, re.IGNORECASE):
+            return True
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # GUARD 2: Shell Command Prompts
+        # ─────────────────────────────────────────────────────────────────────
+        command_prompts = ['$ ', '# ', '> ', '% ', '>>> ', '~$ ', 'bash$ ', 'sh$ ']
+        if any(text_stripped.startswith(prompt) for prompt in command_prompts):
+            return True
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # GUARD 3: File Paths
+        # ─────────────────────────────────────────────────────────────────────
+        # Absolute paths (Unix/Linux)
+        if text_stripped.startswith(('/home/', '/usr/', '/var/', '/etc/', '/opt/', '/root/', '/')):
+            return True
+        
+        # Relative paths
+        if text_stripped.startswith(('./', '../', '~/', '.\\', '..\\', '~\\')):
+            return True
+        
+        # Windows paths (drive letter)
+        if re.match(r'^[A-Z]:\\', text_stripped, re.IGNORECASE):
+            return True
+        
+        path_separator_count = text_stripped.count('/') + text_stripped.count('\\')
+        is_likely_url = '://' in text_stripped  # URLs have ://
+        
+        prose_starters = ('the ', 'a ', 'an ', 'this ', 'that ', 'these ', 'those ', 'in ', 'on ', 'at ', 'is ', 'are ')
+        starts_with_prose = text_lower.startswith(prose_starters)
+        
+        # Check for file-like patterns (has file extension)
+        has_file_extension = bool(re.match(r'.*\.\w{1,10}$', text_stripped))
+        
+        # Only trigger if it's a standalone path:
+        # - Has multiple separators
+        # - Doesn't start with prose words
+        # - Either starts with path char OR has file extension OR high slash density
+        is_standalone_path = (not is_likely_url and 
+                             path_separator_count >= 2 and 
+                             len(sent) < 15 and
+                             not starts_with_prose and
+                             (text_stripped.startswith(('/', '.', '~')) or 
+                              has_file_extension or 
+                              path_separator_count / len(text_stripped) > 0.15))
+        
+        if is_standalone_path:
+            return True
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # GUARD 4: Code Syntax Markers
+        # ─────────────────────────────────────────────────────────────────────
+        # Surrounded by backticks
+        if (text_stripped.startswith('`') and text_stripped.endswith('`')):
+            return True
+        
+        # Contains code fence markers
+        if text_stripped.startswith('```') or text_stripped.endswith('```'):
+            return True
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # GUARD 5: Technical Syntax Patterns
+        # ─────────────────────────────────────────────────────────────────────
+        # Check for common technical patterns
+        technical_patterns = [
+            r'^[a-zA-Z_][a-zA-Z0-9_]*\(\)$',  # function()
+            r'^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*$',  # object.method
+            r'^[A-Z_][A-Z0-9_]+$',  # CONSTANT_NAME
+            r'^[\w\-]+\.[\w\-]+\.[\w\-]+$',  # package.subpackage.module
+            r'^\{.*\}$',  # {variable}
+            r'^\$\{.*\}$',  # ${variable}
+            r'^<.*>$',  # <placeholder>
+        ]
+        
+        for pattern in technical_patterns:
+            if re.match(pattern, text_stripped):
+                return True
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # GUARD 6: Context-Based Detection
+        # ─────────────────────────────────────────────────────────────────────
+        # If content_type is explicitly "code" or "command"
+        content_type = context.get('content_type', '')
+        if content_type in ['code', 'command', 'script', 'terminal']:
+            return True
+        
+        # ─────────────────────────────────────────────────────────────────────
+        # GUARD 7: Very Short Technical Identifiers
+        # ─────────────────────────────────────────────────────────────────────
+        # Single technical word without spaces (e.g., "kubectl", "npm", "git")
+        word_count = len([t for t in sent if t.is_alpha])
+        if word_count == 1 and not sent[0].is_sent_start:
+            # Single word, possibly a command or identifier
+            if re.match(r'^[a-z0-9\-_]+$', text_stripped):
+                return True
+        
+        # Default: treat as prose
+        return False
+    
+    def _is_list_item_fragment(self, sent: 'Span', context: Dict[str, Any]) -> bool:
+        """
+        Detect if this is a list item fragment (non-sentence) that shouldn't require a period.
+        
+        Fragments include:
+        - Short phrases without verbs (e.g., "GitHub or GitLab for repositories")
+        - Noun phrases (e.g., "Configuration options")
+        - Prepositional phrases (e.g., "For production environments")
+        - Imperative fragments at list start (e.g., "Enable security")
+        
+        Complete sentences that should have periods:
+        - Statements with subject and verb (e.g., "The system processes the data")
+        - Multiple clauses
+        """
+        
+        # Check if we're in a list-like context
+        block_type = context.get('block_type', '')
+        is_list_context = any(marker in block_type.lower() for marker in ['list', 'table'])
+        
+        # If not in a list context, apply normal period rules
+        if not is_list_context:
+            return False
+        
+        # Analyze sentence structure
+        sentence_text = sent.text.strip()
+        word_count = len([token for token in sent if token.is_alpha])
+        
+        # Very short items are almost always fragments
+        if word_count <= 3:
+            return True
+        
+        # Check for verbs
+        verbs = [token for token in sent if token.pos_ == 'VERB']
+        has_finite_verb = any(token.tag_ in ['VBZ', 'VBP', 'VBD'] for token in verbs)
+        
+        # No verbs at all = fragment
+        if not verbs:
+            return True
+        
+        # Only gerunds or infinitives (VBG, VB with 'to') = likely fragment
+        if verbs and not has_finite_verb:
+            # Check if it's just gerunds or infinitives
+            only_non_finite = all(token.tag_ in ['VBG', 'VB', 'VBN'] for token in verbs)
+            if only_non_finite:
+                return True
+        
+        # Check for complete sentence structure
+        # A complete sentence typically has a subject (nsubj) and a finite verb
+        has_subject = any(token.dep_ == 'nsubj' for token in sent)
+        
+        # If it has a finite verb AND a subject, it's likely a complete sentence
+        if has_finite_verb and has_subject:
+            return False  # This is a complete sentence, should have a period
+        
+        # Check if it's a simple noun phrase or prepositional phrase
+        # Look at the root token
+        root_token = [token for token in sent if token.dep_ == 'ROOT']
+        if root_token:
+            root = root_token[0]
+            # If root is a noun or preposition, likely a fragment
+            if root.pos_ in ['NOUN', 'PROPN', 'ADP']:
+                return True
+        
+        # Check for list markers or enumeration indicators
+        list_indicators = ['github', 'bitbucket', 'gitlab', 'quay', 'tekton', 'jenkins']
+        text_lower = sentence_text.lower()
+        if any(indicator in text_lower for indicator in list_indicators):
+            # Common list pattern: "Option A, Option B, or Option C for purpose"
+            if ' or ' in text_lower and ' for ' in text_lower:
+                return True
+        
+        # Default: If we're in a list context and it's relatively short without clear sentence markers
+        if is_list_context and word_count < 12:
+            # If it doesn't have both subject and finite verb, treat as fragment
+            if not (has_finite_verb and has_subject):
+                return True
+        
+        # If we get here and it's in a list, default to assuming it's a fragment
+        # unless it clearly has sentence structure
+        return is_list_context and not (has_finite_verb and has_subject)
     
     def _get_sentence_for_position(self, position: int, text: str) -> str:
         """Get the sentence containing a specific text position."""

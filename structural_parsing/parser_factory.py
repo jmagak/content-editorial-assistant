@@ -3,6 +3,7 @@ Parser factory for structural parsing.
 Uses format detection and dispatches to appropriate parsers.
 """
 
+import logging
 from typing import Union, Literal
 from .format_detector import FormatDetector
 from .asciidoc.parser import AsciiDocParser
@@ -13,6 +14,8 @@ from .plaintext.parser import PlainTextParser
 from .plaintext.types import PlainTextParseResult
 from .dita.parser import DITAParser
 from .dita.types import DITAParseResult
+
+logger = logging.getLogger(__name__)
 
 
 class StructuralParserFactory:
@@ -43,56 +46,93 @@ class StructuralParserFactory:
         Returns:
             ParseResult from the appropriate parser
         """
+        logger.info(f"🔍 [PARSER-DEBUG] parse() called with format_hint='{format_hint}', filename='{filename}'")
+        logger.info(f"🔍 [PARSER-DEBUG] Content length: {len(content) if content else 0} chars")
+        
         # Handle None content
         if content is None:
+            logger.warning(f"⚠️ [PARSER-DEBUG] Content is None, using empty string")
             content = ""
+        
+        if content:
+            logger.info(f"🔍 [PARSER-DEBUG] Content preview (first 200 chars): {content[:200]}")
         
         # Handle explicit format hints
         if format_hint == 'asciidoc':
-            return self.asciidoc_parser.parse(content, filename)
+            logger.info(f"✅ [PARSER-DEBUG] Using explicit AsciiDoc parser (format_hint='asciidoc')")
+            result = self.asciidoc_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] AsciiDoc parser result: success={result.success}, blocks={len(result.blocks) if hasattr(result, 'blocks') else 'N/A'}")
+            return result
         elif format_hint == 'markdown':
-            return self.markdown_parser.parse(content, filename)
+            logger.info(f"✅ [PARSER-DEBUG] Using explicit Markdown parser (format_hint='markdown')")
+            result = self.markdown_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] Markdown parser result: success={result.success}, blocks={len(result.blocks) if hasattr(result, 'blocks') else 'N/A'}")
+            return result
         elif format_hint == 'plaintext':
-            # Use dedicated plain text parser
-            return self.plaintext_parser.parse(content, filename)
+            logger.info(f"✅ [PARSER-DEBUG] Using explicit PlainText parser (format_hint='plaintext')")
+            result = self.plaintext_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] PlainText parser result: success={result.success}, blocks={len(result.blocks) if hasattr(result, 'blocks') else 'N/A'}")
+            return result
         elif format_hint == 'dita':
-            # Use dedicated DITA parser
-            return self.dita_parser.parse(content, filename)
+            logger.info(f"✅ [PARSER-DEBUG] Using explicit DITA parser (format_hint='dita')")
+            result = self.dita_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] DITA parser result: success={result.success}, blocks={len(result.blocks) if hasattr(result, 'blocks') else 'N/A'}")
+            return result
         
         # For 'auto' detection, use improved format detection first
-        # This ensures we don't incorrectly parse Markdown as AsciiDoc
+        logger.info(f"🔍 [PARSER-DEBUG] format_hint='auto', detecting format from content...")
         detected_format = self.format_detector.detect_format(content)
+        logger.info(f"✅ [PARSER-DEBUG] Auto-detected format: {detected_format}")
         
         if detected_format == 'plaintext':
-            # Use dedicated plain text parser
-            return self.plaintext_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] Using PlainText parser (auto-detected)")
+            result = self.plaintext_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] PlainText parser result: success={result.success}")
+            return result
         elif detected_format == 'dita':
-            # Use dedicated DITA parser
-            return self.dita_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] Using DITA parser (auto-detected)")
+            result = self.dita_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] DITA parser result: success={result.success}")
+            return result
         elif detected_format == 'asciidoc':
-            # Format detector thinks it's AsciiDoc, try AsciiDoc parser
+            logger.info(f"🔍 [PARSER-DEBUG] Detected as AsciiDoc, checking parser availability...")
+            logger.info(f"🔍 [PARSER-DEBUG] Asciidoctor available: {self.asciidoc_parser.asciidoctor_available}")
+            
             if self.asciidoc_parser.asciidoctor_available:
+                logger.info(f"🔍 [PARSER-DEBUG] Attempting AsciiDoc parsing...")
                 asciidoc_result = self.asciidoc_parser.parse(content, filename)
+                logger.info(f"🔍 [PARSER-DEBUG] AsciiDoc result: success={asciidoc_result.success}, blocks={len(asciidoc_result.blocks) if hasattr(asciidoc_result, 'blocks') else 'N/A'}")
+                
                 if asciidoc_result.success:
+                    logger.info(f"✅ [PARSER-DEBUG] AsciiDoc parsing successful!")
                     return asciidoc_result
                 else:
-                    # AsciiDoc parsing failed, but detector thought it was AsciiDoc
-                    # Fall back to Markdown parser as last resort
-                    return self.markdown_parser.parse(content, filename)
+                    logger.warning(f"⚠️ [PARSER-DEBUG] AsciiDoc parsing failed, falling back to Markdown")
+                    result = self.markdown_parser.parse(content, filename)
+                    logger.info(f"🔍 [PARSER-DEBUG] Markdown fallback result: success={result.success}")
+                    return result
             else:
-                # Asciidoctor not available, fall back to Markdown
-                return self.markdown_parser.parse(content, filename)
+                logger.warning(f"⚠️ [PARSER-DEBUG] Asciidoctor not available, falling back to Markdown")
+                result = self.markdown_parser.parse(content, filename)
+                logger.info(f"🔍 [PARSER-DEBUG] Markdown fallback result: success={result.success}")
+                return result
         else:
-            # Format detector thinks it's Markdown
+            logger.info(f"🔍 [PARSER-DEBUG] Detected as Markdown, attempting parsing...")
             markdown_result = self.markdown_parser.parse(content, filename)
+            logger.info(f"🔍 [PARSER-DEBUG] Markdown result: success={markdown_result.success}, blocks={len(markdown_result.blocks) if hasattr(markdown_result, 'blocks') else 'N/A'}")
             
             # If Markdown parsing fails and Asciidoctor is available,
             # try AsciiDoc as fallback (in case format detection was wrong)
             if not markdown_result.success and self.asciidoc_parser.asciidoctor_available:
+                logger.warning(f"⚠️ [PARSER-DEBUG] Markdown failed, trying AsciiDoc as fallback...")
                 asciidoc_result = self.asciidoc_parser.parse(content, filename)
+                logger.info(f"🔍 [PARSER-DEBUG] AsciiDoc fallback result: success={asciidoc_result.success}")
+                
                 if asciidoc_result.success:
+                    logger.info(f"✅ [PARSER-DEBUG] AsciiDoc fallback successful!")
                     return asciidoc_result
             
+            logger.info(f"🔍 [PARSER-DEBUG] Returning Markdown result")
             return markdown_result
     
     def get_available_parsers(self) -> dict:

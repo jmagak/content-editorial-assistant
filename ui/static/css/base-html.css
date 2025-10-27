@@ -986,6 +986,11 @@
         --app-neutral-900: #F9FAFB;
     }
 
+    body, .pf-v5-c-body {
+        background: #1F2937;
+        color: #E5E7EB;
+    }
+
     .pf-v5-c-masthead {
         background: rgba(31, 41, 55, 0.85);
         border-bottom-color: var(--app-neutral-200);
@@ -998,5 +1003,128 @@
 
     .pf-v5-c-page__main {
         background: var(--app-neutral-50);
+    }
+
+    /* Modern Header Dark Mode */
+    .modern-header {
+        background: linear-gradient(135deg, 
+            rgba(31, 41, 55, 0.95) 0%, 
+            rgba(55, 65, 81, 0.98) 100%);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 
+            0 1px 3px rgba(0, 0, 0, 0.2),
+            0 8px 32px rgba(0, 0, 0, 0.15);
+    }
+
+    .brand-name {
+        color: #F9FAFB;
+    }
+
+    .brand-subtitle {
+        color: #9CA3AF;
+    }
+
+    .nav-toggle-icon span {
+        background: #E5E7EB;
+    }
+
+    .action-btn {
+        color: #9CA3AF;
+    }
+
+    .action-btn:hover {
+        background: rgba(0, 122, 255, 0.15);
+        color: #60A5FA;
+    }
+
+    .user-btn {
+        background: rgba(0, 122, 255, 0.1);
+        border: 1px solid rgba(0, 122, 255, 0.2);
+        color: #60A5FA;
+    }
+
+    .user-btn:hover {
+        background: rgba(0, 122, 255, 0.2);
+        border-color: rgba(0, 122, 255, 0.3);
+    }
+
+    /* Sidebar Dark Mode */
+    .pf-v5-c-nav__link {
+        color: #D1D5DB;
+    }
+
+    .pf-v5-c-nav__link:hover {
+        background: rgba(0, 122, 255, 0.15);
+        color: #60A5FA;
+    }
+
+    .nav-section-title {
+        color: #9CA3AF;
+    }
+
+    /* Card Styles Dark Mode */
+    .app-card {
+        background: #374151;
+        border-color: #4B5563;
+    }
+
+    .app-card:hover {
+        border-color: #6B7280;
+    }
+
+    /* Button Styles Dark Mode */
+    .app-btn-secondary {
+        background: #4B5563;
+        border-color: #6B7280;
+        color: #E5E7EB;
+    }
+
+    .app-btn-secondary:hover {
+        background: #6B7280;
+    }
+
+    /* Upload Zone Dark Mode */
+    .upload-zone {
+        background: #374151;
+        border-color: #6B7280;
+    }
+
+    .upload-zone:hover,
+    .upload-zone.pf-m-drag-hover {
+        border-color: var(--app-primary-color);
+        background: rgba(0, 122, 255, 0.05);
+    }
+
+    /* Typography Dark Mode */
+    .app-title-lg,
+    .app-title-md {
+        color: #F9FAFB;
+    }
+
+    .app-title-sm {
+        color: #F3F4F6;
+    }
+
+    .app-text-body {
+        color: #E5E7EB;
+    }
+
+    .app-text-sm {
+        color: #D1D5DB;
+    }
+
+    .app-text-xs {
+        color: #9CA3AF;
+    }
+
+    /* Alert Dark Mode */
+    .pf-v5-c-alert {
+        background: rgba(55, 65, 81, 0.95);
+        color: #E5E7EB;
+    }
+
+    /* Sidebar Backdrop Dark Mode */
+    .sidebar-backdrop {
+        background: rgba(0, 0, 0, 0.6);
     }
 }

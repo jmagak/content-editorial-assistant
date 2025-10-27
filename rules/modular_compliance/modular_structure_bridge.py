@@ -56,6 +56,7 @@ class ModularStructureBridge:
             'ordered_lists': [],
             'unordered_lists': [],
             'tables': [],
+            'table_cells': [],  # NEW: Track table cell content for analysis
             'code_blocks': [],
             'images': [],
             'line_count': len(content.split('\n')),
@@ -120,12 +121,26 @@ class ModularStructureBridge:
                 if unordered_list['items']:
                     structure['unordered_lists'].append(unordered_list)
             
-            # Extract tables
+            # Extract tables and their cell content
             elif block.block_type == AsciiDocBlockType.TABLE:
-                structure['tables'].append({
+                table_data = {
                     'line_number': block.start_line,
-                    'span': (block.start_pos, block.end_pos)
-                })
+                    'span': (block.start_pos, block.end_pos),
+                    'cells': []
+                }
+                
+                # Extract cell content recursively
+                self._extract_table_cells(block, table_data['cells'], block.start_line)
+                
+                structure['tables'].append(table_data)
+                
+                # Also add cells to flat list for easier analysis
+                for cell in table_data['cells']:
+                    structure['table_cells'].append({
+                        'text': cell['text'],
+                        'line_number': cell['line_number'],
+                        'span': cell['span']
+                    })
             
             # Extract code blocks
             elif block.block_type in [AsciiDocBlockType.LISTING, AsciiDocBlockType.LITERAL]:
@@ -149,7 +164,13 @@ class ModularStructureBridge:
                 self._extract_from_blocks(block.children, structure)
     
     def _extract_introduction_paragraphs(self, blocks) -> List[str]:
-        """Extract introduction paragraphs (content before first major structural element)."""
+        """
+        Extract introduction paragraphs (content before first major structural element).
+        
+        Per Red Hat: Introduction is a single, concise paragraph after the title.
+        We collect all paragraphs that appear before the first == heading (level 2+).
+        Tables, lists, etc. can appear after intro paragraphs without ending collection.
+        """
         introduction_paragraphs = []
         found_title = False
         
@@ -160,23 +181,56 @@ class ModularStructureBridge:
                     found_title = True
                 continue
             
-            # Stop at first major structural element after title
-            if block.block_type in [
-                AsciiDocBlockType.HEADING,        # Another heading
-                AsciiDocBlockType.ORDERED_LIST,   # Ordered list
-                AsciiDocBlockType.UNORDERED_LIST, # Unordered list  
-                AsciiDocBlockType.TABLE,          # Table
-                AsciiDocBlockType.LISTING,        # Code block
-                AsciiDocBlockType.LITERAL         # Literal block
-            ]:
+            # Stop at first level-2+ heading (== or deeper) - this marks body sections
+            if block.block_type == AsciiDocBlockType.HEADING and block.level >= 2:
                 break
             
-            # Collect paragraph content
+            # Collect paragraph content (continue collecting even if tables/lists appear)
+            # This handles cases where intro is followed immediately by tables
             if (block.block_type == AsciiDocBlockType.PARAGRAPH and 
                 block.content and block.content.strip()):
                 introduction_paragraphs.append(block.content.strip())
+                
+        # If no paragraphs found but we have blocks after title, check for preamble
+        if not introduction_paragraphs and found_title:
+            # Some AsciiDoc parsers use PREAMBLE for content before first section
+            for block in blocks:
+                if block.block_type == AsciiDocBlockType.PREAMBLE:
+                    # Extract paragraphs from preamble children
+                    if hasattr(block, 'children'):
+                        for child in block.children:
+                            if (child.block_type == AsciiDocBlockType.PARAGRAPH and 
+                                child.content and child.content.strip()):
+                                introduction_paragraphs.append(child.content.strip())
         
         return introduction_paragraphs
+    
+    def _extract_table_cells(self, table_block, cells_list: List[Dict[str, Any]], table_start_line: int):
+        """
+        Recursively extract cell content from table blocks.
+        
+        Args:
+            table_block: The table block to process
+            cells_list: List to append cell data to
+            table_start_line: Starting line number of the table
+        """
+        if not hasattr(table_block, 'children'):
+            return
+        
+        for child in table_block.children:
+            # Check if this is a table cell
+            if hasattr(child, 'block_type') and str(child.block_type).endswith('TABLE_CELL'):
+                cell_text = child.get_text_content() if hasattr(child, 'get_text_content') else child.content
+                if cell_text and cell_text.strip():
+                    cells_list.append({
+                        'text': cell_text.strip(),
+                        'line_number': child.start_line if hasattr(child, 'start_line') else table_start_line,
+                        'span': (child.start_pos, child.end_pos) if hasattr(child, 'start_pos') else (0, 0)
+                    })
+            
+            # Recursively process children (for nested structures)
+            if hasattr(child, 'children') and child.children:
+                self._extract_table_cells(child, cells_list, table_start_line)
     
     def _create_empty_structure(self) -> Dict[str, Any]:
         """Create empty structure for empty content or parsing failures."""
@@ -187,6 +241,7 @@ class ModularStructureBridge:
             'ordered_lists': [],
             'unordered_lists': [],
             'tables': [],
+            'table_cells': [],
             'code_blocks': [],
             'images': [],
             'line_count': 0,

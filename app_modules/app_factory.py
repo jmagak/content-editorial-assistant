@@ -8,9 +8,11 @@ import os
 import logging
 import atexit
 import signal
-from flask import Flask
+from flask import Flask, request, g
 from flask_cors import CORS
 from flask_socketio import SocketIO
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from config import Config
 from .api_routes import setup_routes
@@ -53,7 +55,38 @@ def create_app(config_class=Config):
     
     # Initialize extensions
     CORS(app)
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+    # Use 'gevent' async mode when running with Gunicorn gevent worker
+    # Use 'threading' for development (when running with Flask's built-in server)
+    import os
+    async_mode = 'gevent' if os.getenv('ENVIRONMENT') == 'production' else 'threading'
+    
+    # Configure Socket.IO with extended timeouts for long-running operations
+    socketio = SocketIO(
+        app, 
+        cors_allowed_origins="*", 
+        async_mode=async_mode,
+        # Extended timeout settings for long-running analysis operations
+        ping_timeout=60,        # 1 minute timeout for pong response
+        ping_interval=25,       # Send ping every 25 seconds
+        engineio_logger=False,  # Reduce log noise
+        # Additional settings for stability
+        max_http_buffer_size=10_000_000,  # 10MB for large documents
+        allow_upgrades=True,
+        http_compression=True
+    )
+    
+    # Initialize rate limiter for production stability
+    # Health checks are excluded to prevent pod restarts
+    limiter = Limiter(
+        app=app,
+        key_func=get_remote_address,
+        default_limits=["100 per hour", "20 per minute"],
+        storage_uri="memory://",
+        strategy="fixed-window"
+    )
+    
+    app.limiter = limiter
+    logger.info("✅ Rate limiting enabled: 20 req/min per IP (health checks will be exempted)")
     
     # Initialize database
     database_initialized = initialize_database(app)
@@ -113,7 +146,7 @@ def setup_logging(app):
         )
         
         # Set specific logger levels
-        logging.getLogger('werkzeug').setLevel(logging.WARNING)
+        logging.getLogger('werkzeug').setLevel(logging.INFO)
         logging.getLogger('socketio').setLevel(logging.WARNING)
         logging.getLogger('engineio').setLevel(logging.WARNING)
         
@@ -161,6 +194,16 @@ def initialize_services():
         'style_analyzer_available': False,
         'ai_rewriter_available': False
     }
+    
+    # ✅ PERFORMANCE OPTIMIZATION: Preload ML models once at startup
+    logger.info("🚀 Preloading ML models for performance optimization...")
+    try:
+        import spacy
+        # Load spaCy model once and cache it
+        _ = spacy.load("en_core_web_sm")
+        logger.info("✅ SpaCy model preloaded successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not preload spaCy model: {e}")
     
     # Initialize Document Processor
     try:

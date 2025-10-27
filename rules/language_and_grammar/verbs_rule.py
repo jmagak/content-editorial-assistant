@@ -1,54 +1,13 @@
 """
-Verbs Rule (YAML-based with Shared Passive Voice Analyzer)
-Based on IBM Style Guide topics: "Verbs: Tense", "Verbs: Voice"
-
-Uses YAML-based corrections vocabulary and centralized PassiveVoiceAnalyzer
-to eliminate code duplication while maintaining sophisticated context-aware suggestions.
+Verbs Rule
+Based on IBM Style Guide: Checks verb tense, voice, agreement, and nominalization.
 """
 from typing import List, Dict, Any, Optional
 import pyinflect
 from .services.language_vocabulary_service import get_verbs_vocabulary
 
-try:
-    from .base_language_rule import BaseLanguageRule
-except ImportError:
-    # Fallback for direct execution
-    try:
-        from base_language_rule import BaseLanguageRule
-    except ImportError:
-        # Define a minimal BaseLanguageRule for testing
-        class BaseLanguageRule:
-            def __init__(self):
-                pass
-            def _create_error(self, sentence: str, sentence_index: int, message: str, 
-                             suggestions: List[str], severity: str = 'medium', 
-                             text: Optional[str] = None, context: Optional[Dict[str, Any]] = None,
-                             **extra_data) -> Dict[str, Any]:
-                """Fallback _create_error implementation when main BaseRule import fails."""
-                # Create basic error structure for fallback scenarios
-                error = {
-                    'type': getattr(self, 'rule_type', 'unknown'),
-                    'message': str(message),
-                    'suggestions': [str(s) for s in suggestions],
-                    'sentence': str(sentence),
-                    'sentence_index': int(sentence_index),
-                    'severity': severity,
-                    'enhanced_validation_available': False  # Mark as fallback
-                }
-                # Add any extra data
-                error.update(extra_data)
-                return error
-
-try:
-    from .passive_voice_analyzer import PassiveVoiceAnalyzer, ContextType, PassiveConstruction
-except ImportError:
-    # Fallback for direct execution
-    try:
-        from passive_voice_analyzer import PassiveVoiceAnalyzer, ContextType, PassiveConstruction
-    except ImportError:
-        PassiveVoiceAnalyzer = None
-        ContextType = None
-        PassiveConstruction = None
+from .base_language_rule import BaseLanguageRule
+from .passive_voice_analyzer import PassiveVoiceAnalyzer, ContextType, PassiveConstruction
 
 try:
     from spacy.tokens import Doc, Token
@@ -56,24 +15,29 @@ except ImportError:
     Doc = None
     Token = None
 
+try:
+    from rule_enhancements import get_adapter
+    ENHANCEMENTS_AVAILABLE = True
+except ImportError:
+    ENHANCEMENTS_AVAILABLE = False
+
 class VerbsRule(BaseLanguageRule):
-    """
-    Checks for verb-related style issues using centralized passive voice analysis.
-    Provides context-aware suggestions for descriptive vs instructional text.
-    """
+    """Checks passive voice, verb tense, agreement, and nominalization."""
     
     def __init__(self):
         super().__init__()
-        if PassiveVoiceAnalyzer:
-            self.passive_analyzer = PassiveVoiceAnalyzer()
-        else:
-            self.passive_analyzer = None
+        self.passive_analyzer = PassiveVoiceAnalyzer()
         self.vocabulary_service = get_verbs_vocabulary()
+        self.config = self.vocabulary_service.get_verbs_config()
+        self.adapter = get_adapter() if ENHANCEMENTS_AVAILABLE else None
     
     def _get_rule_type(self) -> str:
         return 'verbs'
 
     def analyze(self, text: str, sentences: List[str], nlp=None, context=None) -> List[Dict[str, Any]]:
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
+        
         errors = []
         if not nlp or not self.passive_analyzer:
             return errors
@@ -83,19 +47,14 @@ class VerbsRule(BaseLanguageRule):
                 continue
             
             doc = nlp(sent_text)
+            corrections = self.adapter.enhance_doc_analysis(doc, self._get_rule_type()) if self.adapter else {}
             
-            # --- PASSIVE VOICE ANALYSIS (evidence-based using shared analyzer) ---
             passive_constructions = self.passive_analyzer.find_passive_constructions(doc)
             
             for construction in passive_constructions:
-                # Calculate evidence score using enhanced analyzer with full context
-                evidence_score = self.passive_analyzer.calculate_passive_voice_evidence(
-                    construction, doc, text, context
-                )
+                evidence_score = self.passive_analyzer.calculate_passive_voice_evidence(construction, doc, text, context)
                 
-                # Only create error if evidence suggests it's worth flagging
-                if evidence_score > 0.1:  # Low threshold - let enhanced validation decide
-                    # Generate context-aware suggestions
+                if evidence_score > self.config['evidence_thresholds']['passive_voice_min']:
                     suggestions = self._generate_context_aware_suggestions(construction, doc, sent_text)
                     message = self._get_contextual_passive_voice_message(construction, evidence_score)
                     
@@ -107,20 +66,17 @@ class VerbsRule(BaseLanguageRule):
                         severity='medium',
                         text=text,
                         context=context,
-                        evidence_score=evidence_score,  # Your nuanced assessment
+                        evidence_score=evidence_score,
                         span=(construction.span_start, construction.span_end),
                         flagged_text=construction.flagged_text
                     ))
 
-            # --- FUTURE TENSE CHECK ('will') ---
             for token in doc:
                 if token.lemma_.lower() == "will" and token.tag_ == "MD":
                     head_verb = token.head
                     if head_verb.pos_ == "VERB":
-                        evidence_score = self._calculate_future_tense_evidence(
-                            token, head_verb, doc, sent_text, text, context or {}
-                        )
-                        if evidence_score > 0.1:
+                        evidence_score = self._calculate_future_tense_evidence(token, head_verb, doc, sent_text, text, context or {})
+                        if evidence_score > self.config['evidence_thresholds']['future_tense_min']:
                             flagged_text = f"{token.text} {head_verb.text}"
                             span_start = token.idx
                             span_end = head_verb.idx + len(head_verb.text)
@@ -137,16 +93,16 @@ class VerbsRule(BaseLanguageRule):
                                 flagged_text=flagged_text
                             ))
 
-            # --- PAST TENSE CHECK (with temporal context awareness) ---
             root_verb = self._find_root_token(doc)
             if (root_verb and root_verb.pos_ == 'VERB' and 'Tense=Past' in str(root_verb.morph)
                 and not self._is_passive_construction(root_verb, doc)):
+                
+                if self._is_attributive_adjective(root_verb, doc):
+                    continue
 
-                evidence_score_past = self._calculate_past_tense_evidence(
-                    root_verb, doc, sent_text, text, context or {}
-                )
+                evidence_score_past = self._calculate_past_tense_evidence(root_verb, doc, sent_text, text, context or {})
 
-                if evidence_score_past > 0.1:
+                if evidence_score_past > self.config['evidence_thresholds']['past_tense_min']:
                     flagged_text = root_verb.text
                     span_start = root_verb.idx
                     span_end = span_start + len(flagged_text)
@@ -163,13 +119,10 @@ class VerbsRule(BaseLanguageRule):
                         flagged_text=flagged_text
                     ))
 
-            # --- NOUN-FORMS-AS-VERBS CHECK ---
             for token in doc:
                 if self._is_noun_form_as_verb_issue(token, doc, sent_text):
-                    evidence_score = self._calculate_noun_verb_evidence(
-                        token, doc, sent_text, text, context or {}
-                    )
-                    if evidence_score > 0.1:
+                    evidence_score = self._calculate_noun_verb_evidence(token, doc, sent_text, text, context or {})
+                    if evidence_score > self.config['evidence_thresholds']['noun_verb_min']:
                         flagged_text = token.text
                         span_start = token.idx
                         span_end = span_start + len(flagged_text)
@@ -185,6 +138,75 @@ class VerbsRule(BaseLanguageRule):
                             span=(span_start, span_end),
                             flagged_text=flagged_text
                         ))
+            
+            for token in doc:
+                if token.pos_ == 'VERB' and token.dep_ in ['ROOT', 'conj', 'ccomp', 'xcomp', 'advcl']:
+                    subject = self._find_verb_subject_for_agreement(token, doc)
+                    
+                    if subject and self._has_subject_verb_disagreement(subject, token, doc, corrections):
+                        evidence_score = self._calculate_agreement_evidence(subject, token, doc, sent_text, text, context or {})
+                        
+                        if evidence_score > self.config['evidence_thresholds']['agreement_min']:
+                            flagged_text = f"{subject.text} ... {token.text}"
+                            span_start = subject.idx
+                            span_end = token.idx + len(token.text)
+                            
+                            errors.append(self._create_error(
+                                sentence=sent_text,
+                                sentence_index=i,
+                                message=self._get_contextual_agreement_message(subject, token, evidence_score),
+                                suggestions=self._generate_agreement_suggestions(subject, token, doc),
+                                severity='high',
+                                text=text,
+                                context=context,
+                                evidence_score=evidence_score,
+                                span=(span_start, span_end),
+                                flagged_text=flagged_text,
+                                subtype='subject_verb_agreement'
+                            ))
+            
+            root = self._find_root_token(doc)
+            if root and root.tag_ == 'VB':
+                for token in doc:
+                    if token.tag_ == 'VBD':
+                        evidence_score = 0.75
+                        errors.append(self._create_error(
+                            sentence=sent_text,
+                            sentence_index=i,
+                            message=f"Mixed verb tenses: The instruction starts with the imperative '{root.text}' but also includes the past tense verb '{token.text}'.",
+                            suggestions=["Use a consistent tense, typically the present tense for all verbs in an instruction."],
+                            severity='medium',
+                            text=text,
+                            context=context,
+                            evidence_score=evidence_score,
+                            span=(token.idx, token.idx + len(token.text)),
+                            flagged_text=token.text,
+                            subtype='tense_inconsistency'
+                        ))
+                        break  # Flag only the first occurrence in the sentence
+            
+            for token in doc:
+                if self._is_weak_verb_with_action_noun(token):
+                    action_noun = self._get_action_noun_object(token)
+                    if action_noun:
+                        evidence_score = self._calculate_nominalization_evidence(token, action_noun, doc, text, context or {})
+                        if evidence_score > self.config['evidence_thresholds']['passive_voice_min']:
+                            flagged_text = f"{token.text} ... {action_noun.text}"
+                            span_start = token.idx
+                            span_end = action_noun.idx + len(action_noun.text)
+                            errors.append(self._create_error(
+                                sentence=sent_text,
+                                sentence_index=i,
+                                message=self._get_contextual_nominalization_message(token, action_noun),
+                                suggestions=self._generate_smart_nominalization_suggestions(token, action_noun),
+                                severity='suggestion',
+                                text=text,
+                                context=context,
+                                evidence_score=evidence_score,
+                                span=(span_start, span_end),
+                                flagged_text=flagged_text,
+                                subtype='nominalized_verb'
+                            ))
         
         return errors
 
@@ -245,12 +267,9 @@ class VerbsRule(BaseLanguageRule):
     def _add_descriptive_suggestions(self, suggestions: List[str], base_verb: str, 
                                    passive_subject: Token, agent: str, doc: Doc) -> None:
         """Add suggestions appropriate for descriptive context."""
-        
-        # Get appropriate actors for descriptive active voice
         descriptive_actors = self._get_descriptive_actors(base_verb, passive_subject, doc)
         
         for actor in descriptive_actors:
-            # Check for same-root awkwardness and use alternative verb if needed
             final_verb = self._get_stylistically_appropriate_verb(base_verb, actor)
             verb_form = self._conjugate_verb(final_verb, actor)
             
@@ -262,39 +281,19 @@ class VerbsRule(BaseLanguageRule):
             if len(suggestions) >= 2:
                 break
         
-        # Fallback descriptive suggestion
         if not suggestions:
             if base_verb in ['document', 'describe', 'specify', 'define']:
-                # Avoid same-root awkwardness in fallback too
                 fallback_verb = self._get_stylistically_appropriate_verb(base_verb, 'the documentation')
                 suggestions.append(f"Use descriptive active voice: 'The documentation {self._conjugate_verb(fallback_verb, 'documentation')} {passive_subject.text.lower()}'")
             else:
                 suggestions.append(f"Use descriptive active voice: 'The system {self._conjugate_verb(base_verb, 'system')} {passive_subject.text.lower()}'")
 
     def _get_stylistically_appropriate_verb(self, base_verb: str, actor: str) -> str:
-        """
-        Return a stylistically appropriate verb, avoiding same-root awkwardness.
-        
-        E.g., avoid "documentation documents" -> use "documentation describes"
-        """
-        # Extract the root noun from the actor
+        """Return a stylistically appropriate verb, avoiding same-root awkwardness."""
         actor_root = actor.replace('the ', '').replace('a ', '').replace('an ', '')
         
-        # Check if actor root and verb lemma are too similar (same-root awkwardness)
         if self._is_same_root_awkward(actor_root, base_verb):
-            # Use alternative verbs for common cases (avoid multi-word verbs for now)
-            verb_alternatives = {
-                'document': 'describe',
-                'describe': 'detail', 
-                'specify': 'define',
-                'define': 'outline',
-                'configure': 'establish',
-                'manage': 'handle',
-                'process': 'handle',
-                'support': 'enable'
-            }
-            
-            alternative = verb_alternatives.get(base_verb)
+            alternative = self.config['verb_stylistic_alternatives'].get(base_verb)
             if alternative:
                 return alternative
         
@@ -302,29 +301,17 @@ class VerbsRule(BaseLanguageRule):
     
     def _is_same_root_awkward(self, actor_root: str, verb: str) -> bool:
         """Check if using actor + verb creates awkward same-root construction."""
-        # Handle obvious cases
-        same_root_pairs = {
-            ('documentation', 'document'),
-            ('configuration', 'configure'), 
-            ('specification', 'specify'),
-            ('management', 'manage'),
-            ('processing', 'process'),
-            ('support', 'support')
-        }
-        
-        return (actor_root, verb) in same_root_pairs or actor_root.startswith(verb) or verb.startswith(actor_root)
+        return ([actor_root, verb] in self.config['same_root_awkward_pairs'] or 
+                actor_root.startswith(verb) or verb.startswith(actor_root))
 
     def _add_instructional_suggestions(self, suggestions: List[str], base_verb: str, 
                                      passive_subject: Token, agent: str) -> None:
         """Add suggestions appropriate for instructional context."""
-        
-        # Use imperative mood for instructions
         if passive_subject and passive_subject.text.lower() in ['it', 'this', 'that']:
             suggestions.append(f"Use imperative: '{base_verb.capitalize()} {passive_subject.text.lower()}' (make the user the actor)")
         else:
             suggestions.append(f"Use imperative: '{base_verb.capitalize()} the {passive_subject.text.lower()}' (make the user the actor)")
         
-        # Suggest specific actors for technical instructions
         if base_verb in ['configure', 'install', 'setup', 'deploy', 'enable', 'disable']:
             suggestions.append(f"Specify the actor: 'The administrator {self._conjugate_verb(base_verb, 'administrator')} the {passive_subject.text.lower()}'")
         elif base_verb in ['test', 'verify', 'check', 'validate']:
@@ -332,31 +319,15 @@ class VerbsRule(BaseLanguageRule):
 
     def _get_descriptive_actors(self, base_verb: str, passive_subject: Token, doc: Doc) -> List[str]:
         """Get appropriate actors for descriptive active voice."""
+        actors = self.config['descriptive_actors'].get(base_verb, self.config['descriptive_actors']['default'])
         
-        # Use the analyzer's verb categorization
-        verb_actors = {
-            'document': ['the documentation', 'the manual', 'the guide'],
-            'describe': ['the documentation', 'the specification', 'the manual'],
-            'specify': ['the configuration', 'the settings', 'the parameters'],
-            'define': ['the system', 'the configuration', 'the specification'],
-            'configure': ['the system', 'the application', 'the software'],
-            'provide': ['the system', 'the platform', 'the service'],
-            'support': ['the system', 'the platform', 'the framework'],
-            'manage': ['the system', 'the application', 'the service']
-        }
-        
-        actors = verb_actors.get(base_verb, ['the system', 'the application'])
-        
-        # Context-based refinement using spaCy analysis
         context_words = [token.lemma_.lower() for token in doc]
+        if any(word in context_words for word in self.config['database_context_words']):
+            if base_verb in self.config['database_verbs']:
+                actors = self.config['descriptive_actors']['store'] + actors
         
-        if any(word in context_words for word in ['database', 'data', 'record']):
-            if base_verb in ['store', 'save', 'retrieve']:
-                actors = ['the database', 'the data store'] + actors
-        
-        return actors[:2]
+        return actors[:self.config['max_actors']]
 
-    # Utility methods (simplified from original)
     def _find_root_token(self, doc: Doc) -> Token:
         """Find the root token of the sentence."""
         for token in doc:
@@ -372,6 +343,36 @@ class VerbsRule(BaseLanguageRule):
         # Use analyzer for consistency
         constructions = self.passive_analyzer.find_passive_constructions(doc)
         return any(c.main_verb == verb_token for c in constructions)
+    
+    def _is_attributive_adjective(self, token: Token, doc: Doc) -> bool:
+        """
+        Check if a past participle is being used as an attributive adjective.
+        
+        Examples:
+        - "forked sample" - forked modifies sample (adjective use)
+        - "cloned repository" - cloned modifies repository (adjective use)
+        - "updated files" - updated modifies files (adjective use)
+        
+        Returns True if this is an adjective, not a verb.
+        """
+        if not token:
+            return False
+        
+        # Check if token is modifying a noun (amod dependency)
+        if token.dep_ == 'amod':
+            return True
+        
+        # Check if any children are nouns that this token modifies
+        for child in token.children:
+            if child.pos_ == 'NOUN' and child.dep_ in ['dobj', 'nsubj', 'compound']:
+                # This "verb" has noun modifiers, suggesting it's actually an adjective
+                return True
+        
+        # Check if token's head is a noun (common pattern: "forked repositories")
+        if hasattr(token, 'head') and token.head.pos_ == 'NOUN':
+            return True
+        
+        return False
 
     def _find_agent_in_by_phrase(self, doc: Doc, main_verb: Token) -> str:
         """Find the agent in a 'by' phrase."""
@@ -390,28 +391,17 @@ class VerbsRule(BaseLanguageRule):
                     return True
         
         sentence_text = doc.text.lower()
-        negative_patterns = ['can not be', 'cannot be', 'should not be', 'must not be']
-        return any(pattern in sentence_text for pattern in negative_patterns)
+        return any(pattern in sentence_text for pattern in self.config['negative_patterns'])
 
     def _get_positive_alternative(self, verb_lemma: str, doc: Doc) -> str:
         """Get a positive alternative for a negated verb."""
-        verb_alternatives = {
-            'overlook': 'address', 'ignore': 'consider', 'miss': 'include',
-            'skip': 'complete', 'avoid': 'ensure', 'neglect': 'maintain'
-        }
-        return verb_alternatives.get(verb_lemma)
+        return self.config['negative_verb_alternatives'].get(verb_lemma)
 
     def _get_past_participle(self, verb_lemma: str) -> str:
         """Get the past participle form of a verb."""
-        irregular_participles = {
-            'configure': 'configured', 'install': 'installed', 'deploy': 'deployed',
-            'address': 'addressed', 'consider': 'considered', 'include': 'included'
-        }
+        if verb_lemma in self.config['irregular_past_participles']:
+            return self.config['irregular_past_participles'][verb_lemma]
         
-        if verb_lemma in irregular_participles:
-            return irregular_participles[verb_lemma]
-        
-        # Regular formation
         if verb_lemma.endswith('e'):
             return verb_lemma + 'd'
         else:
@@ -419,105 +409,51 @@ class VerbsRule(BaseLanguageRule):
 
     def _conjugate_verb(self, verb_lemma: str, subject: str) -> str:
         """Enhanced verb conjugation for both singular and descriptive subjects."""
-        
         if subject.startswith('the '):
             subject_noun = subject[4:]
         else:
             subject_noun = subject.lower()
         
-        third_person_singular = {
-            'system', 'server', 'application', 'service', 'documentation', 'manual', 
-            'configuration', 'database', 'interface', 'platform', 'framework'
-        }
-        
-        if subject_noun in third_person_singular:
-            if verb_lemma.endswith('e'):
-                return verb_lemma + 's'
-            elif verb_lemma.endswith(('s', 'sh', 'ch', 'x', 'z')):
-                return verb_lemma + 'es'
-            elif verb_lemma.endswith('y') and len(verb_lemma) > 1 and verb_lemma[-2] not in 'aeiou':
-                return verb_lemma[:-1] + 'ies'
-            else:
-                return verb_lemma + 's'
+        if subject_noun in self.config['third_person_singular_subjects']:
+            return self._add_s_ending(verb_lemma)
         else:
             return verb_lemma
 
     def _has_legitimate_temporal_context(self, doc, sentence: str) -> bool:
-        """
-        Detect when past tense is legitimately appropriate due to temporal context.
-        
-        Past tense is appropriate for:
-        - Historical descriptions ("Before this update...")
-        - Bug reports and issue descriptions  
-        - Release notes and change descriptions
-        - Temporal comparisons ("Previously...")
-        """
+        """Detect when past tense is appropriate due to temporal context."""
         sentence_lower = sentence.lower()
         
-        # Temporal indicators that justify past tense
-        temporal_indicators = {
-            # Version/update context
-            'before this update', 'before the update', 'prior to this update',
-            'before this release', 'before the release', 'in previous versions',
-            'in earlier versions', 'previously', 'formerly', 'originally',
-            
-            # Issue/bug context  
-            'this issue occurred', 'this condition occurred', 'this problem occurred',
-            'the issue was', 'the problem was', 'the bug was', 'the error was',
-            'users experienced', 'this caused', 'this resulted in',
-            
-            # Historical context
-            'in the past', 'historically', 'before the fix', 'before the change',
-            'until now', 'until this version', 'up until', 'prior to',
-            
-            # Specific temporal phrases
-            'this condition occurred', 'the service could not', 'users could not',
-            'the system was unable', 'it was not possible', 'this failed to'
-        }
-        
-        # Check for explicit temporal indicators
-        for indicator in temporal_indicators:
-            if indicator in sentence_lower:
-                return True
-        
-        # Pattern detection using spaCy for more sophisticated analysis
-        temporal_patterns = self._detect_temporal_patterns(doc)
-        if temporal_patterns:
+        if any(indicator in sentence_lower for indicator in self.config['temporal_indicators']['strong']):
             return True
         
-        # Context clues from document structure (if available)
-        context_clues = self._detect_release_notes_context(sentence_lower)
-        if context_clues:
+        if any(indicator in sentence_lower for indicator in self.config['temporal_indicators']['weak']):
+            return True
+        
+        if self._detect_temporal_patterns(doc):
+            return True
+        
+        if self._detect_release_notes_context(sentence_lower):
             return True
         
         return False
     
     def _detect_temporal_patterns(self, doc) -> bool:
-        """Use spaCy to detect temporal patterns that justify past tense."""
-        
-        # Look for temporal prepositions at sentence start
+        """Use spaCy to detect temporal patterns."""
         if len(doc) > 0:
             first_token = doc[0]
-            temporal_prepositions = {'before', 'after', 'during', 'until', 'since', 'when'}
-            if first_token.lemma_.lower() in temporal_prepositions:
+            if first_token.lemma_.lower() in self.config['temporal_prepositions']:
                 return True
         
-        # Look for temporal nouns/phrases
-        temporal_nouns = {'update', 'release', 'version', 'fix', 'change', 'modification'}
         for token in doc:
-            if (token.lemma_.lower() in temporal_nouns and 
+            if (token.lemma_.lower() in self.config['temporal_nouns'] and 
                 any(child.text.lower() in {'this', 'the', 'previous', 'earlier'} 
                     for child in token.children)):
                 return True
         
-        # Look for modal past constructions indicating capability/possibility
         for token in doc:
-            if (token.lemma_.lower() in {'could', 'would', 'might'} and 
-                token.tag_ == 'MD'):
-                # Check if this is describing a past limitation/capability
+            if (token.lemma_.lower() in self.config['modal_past_verbs'] and token.tag_ == 'MD'):
                 head_verb = token.head
-                if head_verb and head_verb.lemma_.lower() in {'reload', 'access', 'load', 'connect', 'process'}:
-                    # Check for negative context
+                if head_verb and head_verb.lemma_.lower() in self.config['temporal_context_verbs']:
                     if any(child.lemma_.lower() == 'not' for child in token.children):
                         return True
         
@@ -525,27 +461,11 @@ class VerbsRule(BaseLanguageRule):
     
     def _detect_release_notes_context(self, sentence_lower: str) -> bool:
         """Detect if this appears to be release notes or changelog context."""
+        if any(indicator in sentence_lower for indicator in self.config['release_notes_indicators']):
+            return True
         
-        release_notes_indicators = {
-            'fixed', 'resolved', 'addressed', 'corrected', 'improved',
-            'enhanced', 'updated', 'modified', 'changed', 'added', 'removed',
-            'introduced', 'deprecated', 'replaced', 'migrated'
-        }
-        
-        issue_description_patterns = {
-            'failed to', 'unable to', 'could not', 'did not', 'would not',
-            'was not', 'were not', 'caused', 'resulted in', 'led to'
-        }
-        
-        # Check for release notes language
-        for indicator in release_notes_indicators:
-            if indicator in sentence_lower:
-                return True
-        
-        # Check for issue description patterns
-        for pattern in issue_description_patterns:
-            if pattern in sentence_lower:
-                return True
+        if any(pattern in sentence_lower for pattern in self.config['issue_indicators']):
+            return True
         
         return False
 
@@ -573,386 +493,188 @@ class VerbsRule(BaseLanguageRule):
     # === EVIDENCE-BASED: FUTURE TENSE ===
 
     def _calculate_future_tense_evidence(self, will_token: Token, head_verb: Token, doc: Doc, sentence: str, text: str, context: Dict[str, Any]) -> float:
-        """
-        Calculate evidence score (0.0-1.0) for future tense concerns.
-        
-        Higher scores indicate stronger evidence that future tense should be corrected.
-        Lower scores indicate acceptable usage in specific contexts.
-        
-        Args:
-            will_token: The 'will' modal token
-            head_verb: The main verb following 'will'
-            doc: The sentence document
-            sentence: The sentence text
-            text: Full document text
-            context: Document context (block_type, content_type, etc.)
-            
-        Returns:
-            float: Evidence score from 0.0 (acceptable) to 1.0 (should be corrected)
-        """
-        evidence_score = 0.0
-        
-        # === STEP 1: BASE EVIDENCE ASSESSMENT ===
+        """Calculate evidence score for future tense concerns."""
         evidence_score = self._get_base_future_tense_evidence(will_token, head_verb, doc, sentence)
         
         if evidence_score == 0.0:
-            return 0.0  # No evidence, skip this construction
+            return 0.0
         
-        # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
         evidence_score = self._apply_linguistic_clues_future_tense(evidence_score, will_token, head_verb, doc, sentence)
-        
-        # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._apply_structural_clues_future_tense(evidence_score, context)
-        
-        # === STEP 4: SEMANTIC CLUES (MACRO-LEVEL) ===
         evidence_score = self._apply_semantic_clues_future_tense(evidence_score, will_token, head_verb, text, context)
-        
-        # === STEP 5: FEEDBACK PATTERNS (LEARNING CLUES) ===
         evidence_score = self._apply_feedback_clues_future_tense(evidence_score, will_token, head_verb, context)
         
-        return max(0.0, min(1.0, evidence_score))  # Clamp to valid range
-
-    # === FUTURE TENSE EVIDENCE METHODS ===
+        return max(0.0, min(1.0, evidence_score))
 
     def _get_base_future_tense_evidence(self, will_token: Token, head_verb: Token, doc: Doc, sentence: str) -> float:
         """Get base evidence score for future tense concerns."""
-        
-        # === FUTURE TENSE TYPE ANALYSIS ===
-        # Different future constructions have different evidence strengths
-        
-        # High-priority corrections (inappropriate in instructions/procedures)
-        inappropriate_contexts = {
-            'will click', 'will select', 'will enter', 'will type', 'will configure',
-            'will install', 'will setup', 'will run', 'will execute', 'will perform'
-        }
-        
-        # Medium-priority corrections (better as present tense)
-        better_as_present = {
-            'will display', 'will show', 'will provide', 'will contain', 'will include',
-            'will support', 'will enable', 'will allow', 'will require'
-        }
-        
-        # Low-priority corrections (context-dependent)
-        context_dependent = {
-            'will be', 'will have', 'will become', 'will remain', 'will continue'
-        }
-        
-        # Check construction type
         construction = f"{will_token.text.lower()} {head_verb.lemma_.lower()}"
+        constructions = self.config['future_tense_constructions']
+        base_evidence = self.config['future_base_evidence']
         
-        if construction in inappropriate_contexts:
-            return 0.8  # High evidence for procedural/instructional contexts
-        elif construction in better_as_present:
-            return 0.6  # Medium evidence for descriptive contexts
-        elif construction in context_dependent:
-            return 0.4  # Lower evidence, context-dependent
+        if construction in constructions['inappropriate_in_instructions']:
+            return base_evidence['inappropriate']
+        elif construction in constructions['better_as_present']:
+            return base_evidence['better_present']
+        elif construction in constructions['context_dependent']:
+            return base_evidence['context_dependent']
         else:
-            return 0.5  # Default evidence for future tense usage
+            return base_evidence['default']
 
     def _apply_linguistic_clues_future_tense(self, evidence_score: float, will_token: Token, head_verb: Token, doc: Doc, sentence: str) -> float:
-        """
-        Apply linguistic analysis clues for future tense detection.
-        
-        Analyzes SpaCy linguistic features including question forms, conditionals,
-        temporal markers, and surrounding context to determine evidence strength
-        for future tense corrections.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            will_token: The 'will' modal token
-            head_verb: The main verb following 'will'
-            doc: The sentence document
-            sentence: The sentence text
-            
-        Returns:
-            float: Modified evidence score based on linguistic analysis
-        """
-        
+        """Apply linguistic clues for future tense detection."""
+        w = self.config['future_linguistic_weights']
         sent_lower = sentence.lower()
         
-        # === QUESTION AND CONDITIONAL FORMS ===
-        # Questions and conditionals may legitimately use 'will'
-        
         if sentence.strip().endswith('?'):
-            evidence_score -= 0.3  # Questions often need future tense
+            evidence_score -= w['question_reduction']
         
-        # Conditional markers
-        conditional_markers = ['if ', 'whether ', 'when ', 'unless ', 'in case ']
-        if any(marker in sent_lower for marker in conditional_markers):
-            evidence_score -= 0.2  # Conditionals may need future tense
+        if any(marker in sent_lower for marker in [f"{m} " for m in self.config['conditional_markers'][:5]]):
+            evidence_score -= w['conditional_reduction']
         
-        # === TEMPORAL CONTEXT INDICATORS ===
-        # Legitimate future temporal markers
-        
-        scheduled_indicators = [
-            'tomorrow', 'next week', 'next month', 'next year', 'later',
-            'upcoming', 'planned', 'scheduled', 'in the future', 'eventually',
-            'soon', 'shortly', 'in time', 'by then', 'after that'
-        ]
-        
-        if any(indicator in sent_lower for indicator in scheduled_indicators):
-            evidence_score -= 0.15  # Scheduled/planned events may justify future tense
-        
-        # === ABILITY AND CAPABILITY CONSTRUCTIONS ===
-        # "will be able to" constructions
+        if any(indicator in sent_lower for indicator in self.config['scheduled_indicators']):
+            evidence_score -= w['scheduled_reduction']
         
         if 'will be able to' in sent_lower:
-            evidence_score -= 0.2  # Capability expressions may justify future tense
+            evidence_score -= w['will_be_able_reduction']
         
-        # Modal combinations that suggest necessity/possibility
-        modal_combinations = ['will need to', 'will have to', 'will be required to']
-        if any(combo in sent_lower for combo in modal_combinations):
-            evidence_score -= 0.1  # Necessity expressions may be acceptable
+        if any(combo in sent_lower for combo in self.config['modal_combinations']):
+            evidence_score -= w['modal_combo_reduction']
         
-        # === SURROUNDING CONTEXT ANALYSIS ===
-        # Check for instruction vs. description context
-        
-        instruction_indicators = [
-            'step', 'click', 'select', 'enter', 'type', 'configure', 'setup',
-            'install', 'run', 'execute', 'perform', 'do the following'
-        ]
-        
-        if any(indicator in sent_lower for indicator in instruction_indicators):
-            evidence_score += 0.2  # Instructions should avoid future tense
-        
-        # === NEGATION CONTEXT ===
-        # Negative constructions may be more acceptable
+        if any(indicator in sent_lower for indicator in self.config['instruction_indicators']):
+            evidence_score += w['instruction_boost']
         
         if 'will not' in sent_lower or "won't" in sent_lower:
-            evidence_score -= 0.1  # Negative futures may be acceptable for warnings
-        
-        # === NAMED ENTITY RECOGNITION ===
-        # Named entities may affect verb usage appropriateness
+            evidence_score -= w['negative_reduction']
         
         for token in doc:
             if hasattr(token, 'ent_type_') and token.ent_type_:
                 ent_type = token.ent_type_
-                
-                # Organization or product entities may use different verb patterns
-                if ent_type in ['ORG', 'PRODUCT', 'WORK_OF_ART']:
-                    # Check if entity is related to the verb construction
-                    if abs(token.i - will_token.i) <= 3:  # Within 3 tokens
-                        evidence_score -= 0.1  # Entity contexts may justify future tense
-                
-                # Person entities may use different language patterns
-                elif ent_type in ['PERSON', 'GPE']:
-                    if abs(token.i - will_token.i) <= 2:  # Within 2 tokens
-                        evidence_score -= 0.05  # Person/place contexts may be more flexible
-                
-                # Event or temporal entities may justify future constructions
-                elif ent_type in ['EVENT', 'DATE', 'TIME']:
-                    if abs(token.i - will_token.i) <= 4:  # Within 4 tokens
-                        evidence_score -= 0.15  # Temporal entities may justify future tense
+                if ent_type in self.config['entity_types']['organizational'] and abs(token.i - will_token.i) <= 3:
+                    evidence_score -= w['entity_org_reduction']
+                elif ent_type in self.config['entity_types']['personal'] and abs(token.i - will_token.i) <= 2:
+                    evidence_score -= w['entity_person_reduction']
+                elif ent_type in self.config['entity_types']['temporal'] and abs(token.i - will_token.i) <= 4:
+                    evidence_score -= w['entity_temporal_reduction']
         
-        # === VERB TYPE ANALYSIS ===
-        # Some verbs are more problematic with 'will' than others
+        if head_verb.lemma_.lower() in self.config['action_verbs']:
+            evidence_score += w['action_verb_boost']
         
-        action_verbs = {
-            'click', 'select', 'enter', 'type', 'run', 'execute', 'perform',
-            'configure', 'install', 'setup', 'create', 'delete', 'modify'
-        }
-        
-        if head_verb.lemma_.lower() in action_verbs:
-            evidence_score += 0.15  # Action verbs should generally be imperative
-        
-        state_verbs = {
-            'be', 'have', 'become', 'remain', 'continue', 'appear', 'seem'
-        }
-        
-        if head_verb.lemma_.lower() in state_verbs:
-            evidence_score -= 0.1  # State verbs more acceptable with 'will'
-        
-        # === SENTENCE POSITION ANALYSIS ===
-        # Future tense at sentence beginning is often more problematic
+        if head_verb.lemma_.lower() in self.config['state_verbs']:
+            evidence_score -= w['state_verb_reduction']
         
         first_two_tokens = [token.text.lower() for token in doc[:2]]
         if 'will' in first_two_tokens:
-            evidence_score += 0.1  # Sentence-initial 'will' often problematic
+            evidence_score += w['early_position_boost']
         
         return evidence_score
 
     def _apply_structural_clues_future_tense(self, evidence_score: float, context: Dict[str, Any]) -> float:
-        """
-        Apply document structure clues for future tense detection.
-        
-        Analyzes document structure context including block types, heading levels,
-        and other structural elements to determine appropriate evidence adjustments
-        for future tense usage.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            context: Document context dictionary
-            
-        Returns:
-            float: Modified evidence score based on structural analysis
-        """
-        
+        """Apply document structure clues for future tense."""
+        w = self.config['future_structural_weights']
         block_type = context.get('block_type', 'paragraph')
         
-        # === TECHNICAL DOCUMENTATION CONTEXTS ===
         if block_type in ['code_block', 'literal_block']:
-            evidence_score -= 0.8  # Code blocks may contain future references
+            evidence_score -= w['code_block_reduction']
         elif block_type == 'inline_code':
-            evidence_score -= 0.6  # Inline code may reference future behavior
-        
-        # === HEADING CONTEXT ===
-        if block_type == 'heading':
+            evidence_score -= w['inline_code_reduction']
+        elif block_type == 'heading':
             heading_level = context.get('block_level', 1)
-            if heading_level == 1:  # H1 - Main headings
-                evidence_score -= 0.2  # Main headings may describe future features
-            elif heading_level == 2:  # H2 - Section headings  
-                evidence_score -= 0.1  # Section headings may reference future content
-            elif heading_level >= 3:  # H3+ - Subsection headings
-                evidence_score -= 0.05  # Subsection headings less likely to need future
-        
-        # === LIST CONTEXT ===
+            if heading_level == 1:
+                evidence_score -= w['h1_reduction']
+            elif heading_level == 2:
+                evidence_score -= w['h2_reduction']
+            elif heading_level >= 3:
+                evidence_score -= w['h3_plus_reduction']
         elif block_type in ['ordered_list_item', 'unordered_list_item']:
-            evidence_score += 0.1  # List items should generally be present/imperative
-            
-            # Nested list items may be more procedural
+            evidence_score += w['list_boost']
             if context.get('list_depth', 1) > 1:
-                evidence_score += 0.05  # Nested items often procedural steps
-        
-        # === TABLE CONTEXT ===
+                evidence_score += w['nested_list_boost']
         elif block_type in ['table_cell', 'table_header']:
-            evidence_score += 0.05  # Tables should generally use present tense
-        
-        # === ADMONITION CONTEXT ===
+            evidence_score += w['table_boost']
         elif block_type == 'admonition':
             admonition_type = context.get('admonition_type', '').upper()
-            if admonition_type in ['NOTE', 'TIP', 'HINT']:
-                evidence_score -= 0.1  # Notes may describe future behavior
-            elif admonition_type in ['WARNING', 'CAUTION', 'DANGER']:
-                evidence_score -= 0.15  # Warnings may describe future consequences
-            elif admonition_type in ['IMPORTANT', 'ATTENTION']:
-                evidence_score -= 0.05  # Important notices may reference future
-        
-        # === QUOTE/CITATION CONTEXT ===
+            if admonition_type in self.config['admonition_types']['informational']:
+                evidence_score -= w['note_tip_reduction']
+            elif admonition_type in self.config['admonition_types']['warning']:
+                evidence_score -= w['warning_reduction']
+            elif admonition_type in self.config['admonition_types']['important']:
+                evidence_score -= w['important_reduction']
         elif block_type in ['block_quote', 'citation']:
-            evidence_score -= 0.2  # Quotes may preserve original future tense
-        
-        # === EXAMPLE/SAMPLE CONTEXT ===
+            evidence_score -= w['quote_reduction']
         elif block_type in ['example', 'sample']:
-            evidence_score -= 0.1  # Examples may show future scenarios
+            evidence_score -= w['example_reduction']
         
         return evidence_score
 
     def _apply_semantic_clues_future_tense(self, evidence_score: float, will_token: Token, head_verb: Token, text: str, context: Dict[str, Any]) -> float:
-        """
-        Apply semantic and content-type clues for future tense detection.
-        
-        Analyzes high-level semantic context including content type, domain, audience,
-        and document purpose to determine evidence strength for future tense corrections.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            will_token: The 'will' modal token
-            head_verb: The main verb following 'will'
-            text: Full document text
-            context: Document context dictionary
-            
-        Returns:
-            float: Modified evidence score based on semantic analysis
-        """
-        
+        """Apply semantic and content-type clues for future tense."""
+        w = self.config['future_semantic_weights']
         content_type = context.get('content_type', 'general')
         domain = context.get('domain', 'general')
         audience = context.get('audience', 'general')
         
-        # === CONTENT TYPE ANALYSIS ===
-        # Some content types strongly discourage future tense
         if content_type == 'procedural':
-            evidence_score += 0.25  # Procedures should use imperative mood
+            evidence_score += w['procedural_boost']
         elif content_type == 'api':
-            evidence_score += 0.2  # API docs should describe current behavior
+            evidence_score += w['api_boost']
         elif content_type == 'technical':
-            evidence_score += 0.15  # Technical writing should be direct
+            evidence_score += w['technical_boost']
         elif content_type == 'tutorial':
-            evidence_score += 0.2  # Tutorials should be step-by-step present
+            evidence_score += w['tutorial_boost']
         elif content_type == 'legal':
-            evidence_score += 0.1  # Legal writing should be precise
+            evidence_score += w['legal_boost']
         elif content_type == 'academic':
-            evidence_score += 0.05  # Academic writing should be clear
+            evidence_score += w['academic_boost']
         elif content_type == 'marketing':
-            evidence_score -= 0.1  # Marketing may describe future benefits
+            evidence_score -= w['marketing_reduction']
         elif content_type == 'narrative':
-            evidence_score -= 0.15  # Narrative may legitimately use future
+            evidence_score -= w['narrative_reduction']
         
-        # === DOMAIN-SPECIFIC PATTERNS ===
         if domain in ['software', 'engineering', 'devops']:
-            evidence_score += 0.1  # Technical domains prefer direct language
+            evidence_score += w['software_domain_boost']
         elif domain in ['user-documentation', 'help']:
-            evidence_score += 0.15  # User docs should be action-oriented
+            evidence_score += w['user_docs_boost']
         elif domain in ['training', 'education']:
-            evidence_score += 0.1  # Training should be direct
+            evidence_score += w['training_boost']
         elif domain in ['legal', 'compliance']:
-            evidence_score += 0.05  # Legal domains prefer precision
+            evidence_score += w['legal_domain_boost']
         elif domain in ['planning', 'roadmap']:
-            evidence_score -= 0.2  # Planning documents may legitimately use future
+            evidence_score -= w['planning_domain_reduction']
         
-        # === AUDIENCE CONSIDERATIONS ===
         if audience in ['beginner', 'general', 'consumer']:
-            evidence_score += 0.1  # General audiences need clear instructions
+            evidence_score += w['beginner_audience_boost']
         elif audience in ['professional', 'business']:
-            evidence_score += 0.05  # Professional content should be direct
+            evidence_score += w['professional_boost']
         elif audience in ['developer', 'technical', 'expert']:
-            evidence_score += 0.08  # Technical audiences expect direct language
+            evidence_score += w['technical_audience_boost']
         
-        # === DOCUMENT PURPOSE ANALYSIS ===
         if self._is_installation_documentation(text):
-            evidence_score += 0.2  # Installation docs should be step-by-step
-        
+            evidence_score += w['installation_docs_boost']
         if self._is_troubleshooting_documentation(text):
-            evidence_score += 0.15  # Troubleshooting should be direct
-        
+            evidence_score += w['troubleshooting_docs_boost']
         if self._is_ui_documentation(text):
-            evidence_score += 0.18  # UI docs should describe current behavior
-        
+            evidence_score += w['ui_docs_boost']
         if self._is_release_notes_documentation(text):
-            evidence_score -= 0.3  # Release notes may describe future features
-        
+            evidence_score -= w['release_notes_reduction']
         if self._is_roadmap_documentation(text):
-            evidence_score -= 0.4  # Roadmaps legitimately use future tense
-        
+            evidence_score -= w['roadmap_reduction']
         if self._is_planning_documentation(text):
-            evidence_score -= 0.3  # Planning docs may use future tense
+            evidence_score -= w['planning_docs_reduction']
         
-        # === SEMANTIC POLISH: CONSEQUENCE/CONDITIONAL DETECTION ===
-        # Detect if/then and cause/effect structures where future tense is appropriate
         if self._is_consequence_or_conditional_context(will_token, text):
-            evidence_score -= 0.5  # Major reduction for legitimate conditional/consequence usage
-            # Examples where future tense is correct:
-            # "Failure to configure SSL will result in security issues"
-            # "If you don't update the settings, the system will malfunction"
-            # "When the server restarts, it will load the new configuration"
-            # "Should the connection fail, the application will retry automatically"
+            evidence_score -= w['consequence_reduction']
         
-        # === DOCUMENT LENGTH CONTEXT ===
         doc_length = len(text.split())
-        if doc_length < 100:  # Short documents
-            evidence_score += 0.05  # Brief content should be direct
-        elif doc_length > 5000:  # Long documents
-            evidence_score += 0.02  # Consistency important in long docs
+        if doc_length < 100:
+            evidence_score += w['doc_short_boost']
+        elif doc_length > 5000:
+            evidence_score += w['doc_long_boost']
         
         return evidence_score
 
     def _is_consequence_or_conditional_context(self, will_token: Token, text: str) -> bool:
-        """
-        Detect if 'will' appears in a consequence or conditional context where future tense is appropriate.
-        
-        Analyzes the linguistic context around 'will' to identify:
-        1. Conditional structures: "If X, then Y will happen"
-        2. Failure/error consequences: "Failure to X will result in Y"  
-        3. Causal relationships: "When X occurs, Y will happen"
-        4. Logical consequences: "Should X fail, Y will activate"
-        
-        Args:
-            will_token: The 'will' modal token to analyze
-            text: Full document text for broader context analysis
-            
-        Returns:
-            bool: True if 'will' appears in legitimate conditional/consequence context
-        """
+        """Detect if 'will' appears in consequence or conditional context."""
         if not will_token or not hasattr(will_token, 'doc') or not hasattr(will_token, 'i'):
             return False
         
@@ -960,190 +682,90 @@ class VerbsRule(BaseLanguageRule):
         will_index = will_token.i
         sentence = will_token.sent
         
-        # === CONDITIONAL INDICATORS ===
-        # Look for conditional words that precede the 'will' clause
-        conditional_indicators = {
-            # Direct conditionals
-            'if', 'unless', 'when', 'whenever', 'should', 'would',
-            # Temporal conditionals  
-            'after', 'before', 'once', 'until', 'while', 'during',
-            # Circumstantial conditionals
-            'in case', 'provided', 'assuming', 'suppose', 'supposing'
-        }
-        
-        # === CONSEQUENCE/FAILURE INDICATORS ===
-        # Look for noun phrases indicating conditions or failures that lead to consequences
-        failure_indicators = {
-            # Direct failure terms
-            'failure', 'error', 'issue', 'problem', 'fault', 'malfunction',
-            'mistake', 'oversight', 'omission', 'neglect', 'breach',
-            # Negative conditions
-            'inability', 'lack', 'absence', 'shortage', 'deficiency',
-            'misconfiguration', 'corruption', 'damage', 'loss'
-        }
-        
-        # === CAUSAL INDICATORS ===
-        # Look for words that indicate cause/effect relationships
-        causal_indicators = {
-            # Direct causation
-            'because', 'since', 'due to', 'owing to', 'thanks to',
-            'as a result', 'consequently', 'therefore', 'thus', 'hence',
-            # Logical flow
-            'then', 'so', 'accordingly', 'subsequently', 'thereafter'
-        }
-        
-        # === ANALYZE PRECEDING CONTEXT ===
-        # Look in the sentence and preceding sentences for indicators
-        
-        # Get text before the 'will' token (within the sentence)
         sentence_start = sentence.start
         tokens_before_will = doc[sentence_start:will_index]
         text_before_will = ' '.join([token.text.lower() for token in tokens_before_will])
         
-        # Check for conditional indicators in the current sentence
-        for indicator in conditional_indicators:
+        for indicator in self.config['conditional_markers']:
+            if indicator in text_before_will:
+                return True
+        for indicator in self.config['failure_indicators']:
+            if indicator in text_before_will:
+                return True
+        for indicator in self.config['causal_indicators']:
             if indicator in text_before_will:
                 return True
         
-        # Check for failure indicators in the current sentence
-        for indicator in failure_indicators:
-            if indicator in text_before_will:
-                return True
-        
-        # Check for causal indicators in the current sentence  
-        for indicator in causal_indicators:
-            if indicator in text_before_will:
-                return True
-        
-        # === ANALYZE BROADER CONTEXT ===
-        # Look at the previous sentence for conditional setup
         sentences = list(doc.sents)
-        current_sent_index = None
-        
-        for i, sent in enumerate(sentences):
-            if sent == sentence:
-                current_sent_index = i
-                break
+        current_sent_index = next((i for i, sent in enumerate(sentences) if sent == sentence), None)
         
         if current_sent_index is not None and current_sent_index > 0:
-            previous_sentence = sentences[current_sent_index - 1]
-            prev_sent_text = previous_sentence.text.lower()
-            
-            # Check for conditional setup in previous sentence
-            for indicator in conditional_indicators:
+            prev_sent_text = sentences[current_sent_index - 1].text.lower()
+            for indicator in self.config['conditional_markers']:
                 if indicator in prev_sent_text:
                     return True
-            
-            # Check for failure/consequence setup in previous sentence
-            for indicator in failure_indicators:
+            for indicator in self.config['failure_indicators']:
                 if indicator in prev_sent_text:
                     return True
         
-        # === SPECIFIC PATTERN DETECTION ===
-        # Look for common conditional/consequence patterns
         sentence_text = sentence.text.lower()
-        
-        # Pattern: "Failure to X will Y"
         if 'failure to' in sentence_text and 'will' in sentence_text:
             return True
-        
-        # Pattern: "If you don't/do not X, Y will Z"
-        if ('if' in sentence_text and 
-            ('don\'t' in sentence_text or 'do not' in sentence_text) and 
-            'will' in sentence_text):
+        if 'if' in sentence_text and ('don\'t' in sentence_text or 'do not' in sentence_text) and 'will' in sentence_text:
             return True
-        
-        # Pattern: "Should X fail/error, Y will Z"  
-        if ('should' in sentence_text and 
-            ('fail' in sentence_text or 'error' in sentence_text) and
-            'will' in sentence_text):
+        if 'should' in sentence_text and ('fail' in sentence_text or 'error' in sentence_text) and 'will' in sentence_text:
             return True
-        
-        # Pattern: "When X happens/occurs, Y will Z"
-        if ('when' in sentence_text and 
-            ('happens' in sentence_text or 'occurs' in sentence_text or 'restarts' in sentence_text) and
-            'will' in sentence_text):
+        if 'when' in sentence_text and ('happens' in sentence_text or 'occurs' in sentence_text or 'restarts' in sentence_text) and 'will' in sentence_text:
             return True
-        
-        # Pattern: "In case of X, Y will Z"
         if 'in case' in sentence_text and 'will' in sentence_text:
             return True
         
         return False
 
     def _apply_feedback_clues_future_tense(self, evidence_score: float, will_token: Token, head_verb: Token, context: Dict[str, Any]) -> float:
-        """
-        Apply feedback patterns for future tense detection.
-        
-        Incorporates learned patterns from user feedback including acceptance rates,
-        context-specific patterns, and correction success rates to refine evidence
-        scoring for future tense corrections.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            will_token: The 'will' modal token
-            head_verb: The main verb following 'will'
-            context: Document context dictionary
-            
-        Returns:
-            float: Modified evidence score based on feedback analysis
-        """
-        
+        """Apply feedback patterns for future tense."""
+        w = self.config['feedback_weights']
         feedback_patterns = self._get_cached_feedback_patterns('verbs_future_tense')
-        
-        # === PHRASE-SPECIFIC FEEDBACK ===
         phrase = f"{will_token.text.lower()} {head_verb.lemma_.lower()}"
         
-        # Check if this specific phrase is commonly accepted by users
-        accepted_phrases = feedback_patterns.get('accepted_future_phrases', set())
-        if phrase in accepted_phrases:
-            evidence_score -= 0.3  # Users consistently accept this phrase
+        if phrase in feedback_patterns.get('accepted_future_phrases', set()):
+            evidence_score -= w['accepted_phrase_reduction']
         
-        flagged_phrases = feedback_patterns.get('flagged_future_phrases', set())
-        if phrase in flagged_phrases:
-            evidence_score += 0.2  # Users consistently flag this phrase
+        if phrase in feedback_patterns.get('flagged_future_phrases', set()):
+            evidence_score += w['flagged_phrase_boost']
         
-        # === CONTEXT-SPECIFIC FEEDBACK ===
         content_type = context.get('content_type', 'general')
         context_patterns = feedback_patterns.get(f'{content_type}_future_patterns', {})
-        
         if phrase in context_patterns.get('acceptable', set()):
-            evidence_score -= 0.2
+            evidence_score -= w['context_acceptable_reduction']
         elif phrase in context_patterns.get('problematic', set()):
-            evidence_score += 0.25
+            evidence_score += w['context_problematic_boost']
         
-        # === VERB-SPECIFIC PATTERNS ===
         verb_lemma = head_verb.lemma_.lower()
         verb_patterns = feedback_patterns.get('verb_specific_patterns', {})
-        
         if verb_lemma in verb_patterns.get('often_accepted_with_will', set()):
-            evidence_score -= 0.15  # This verb often acceptable with 'will'
+            evidence_score -= w['verb_accepted_reduction']
         elif verb_lemma in verb_patterns.get('problematic_with_will', set()):
-            evidence_score += 0.2  # This verb problematic with 'will'
+            evidence_score += w['verb_problematic_boost']
         
-        # === CORRECTION SUCCESS PATTERNS ===
-        correction_patterns = feedback_patterns.get('correction_success', {})
-        correction_success = correction_patterns.get(phrase, 0.5)
-        
+        correction_success = feedback_patterns.get('correction_success', {}).get(phrase, 0.5)
         if correction_success > 0.8:
-            evidence_score += 0.1  # Corrections highly successful
+            evidence_score += w['high_correction_success_boost']
         elif correction_success < 0.3:
-            evidence_score -= 0.15  # Corrections often rejected
+            evidence_score -= w['low_correction_success_reduction']
         
         return evidence_score
 
-    # Removed _get_cached_feedback_patterns_future_tense - using base class utility
-
     def _get_contextual_future_tense_message(self, flagged_text: str, ev: float, context: Dict[str, Any]) -> str:
-        """Generate context-aware error messages for future tense patterns."""
-        
+        """Generate context-aware error messages for future tense."""
         content_type = context.get('content_type', 'general')
+        thresholds = self.config['evidence_thresholds']
         
-        if ev > 0.9:
+        if ev > thresholds['future_high']:
             return f"Future tense '{flagged_text}' should be avoided in {content_type} documentation. Use present or imperative."
-        elif ev > 0.7:
+        elif ev > thresholds['future_medium']:
             return f"Consider replacing '{flagged_text}' with present tense for clearer {content_type} writing."
-        elif ev > 0.5:
+        elif ev > thresholds['future_low']:
             return f"Present tense is preferred over '{flagged_text}' in most technical writing."
         else:
             return f"The phrase '{flagged_text}' may benefit from present tense for clarity."
@@ -1200,534 +822,297 @@ class VerbsRule(BaseLanguageRule):
         
         return suggestions[:3]
 
-    # === EVIDENCE-BASED: PAST TENSE ===
-
     def _calculate_past_tense_evidence(self, root_verb: Token, doc: Doc, sentence: str, text: str, context: Dict[str, Any]) -> float:
-        """
-        Calculate evidence score (0.0-1.0) for past tense concerns.
-        
-        Higher scores indicate stronger evidence that past tense should be corrected.
-        Lower scores indicate acceptable usage in specific contexts.
-        
-        Args:
-            root_verb: The root verb token in past tense
-            doc: The sentence document
-            sentence: The sentence text
-            text: Full document text
-            context: Document context (block_type, content_type, etc.)
-            
-        Returns:
-            float: Evidence score from 0.0 (acceptable) to 1.0 (should be corrected)
-        """
-        evidence_score = 0.0
-        
-        # === STEP 1: BASE EVIDENCE ASSESSMENT ===
+        """Calculate evidence score for past tense concerns."""
         evidence_score = self._get_base_past_tense_evidence(root_verb, doc, sentence)
         
         if evidence_score == 0.0:
-            return 0.0  # No evidence, skip this construction
+            return 0.0
         
-        # === NARRATIVE/BLOG CONTENT CLUE (RELAX FORMAL RULES) ===
-        # Detect narrative/blog writing style and significantly reduce evidence
+        if context.get('is_link_text'):
+            evidence_score += 0.3
+        
         if self._is_narrative_or_blog_content(text, context):
-            evidence_score -= 0.4  # Major reduction for narrative/blog content
-            # In narrative/blog content, past tense verbs ("started", "discovered", "learned") are 
-            # not only acceptable but necessary for storytelling and sharing experiences
+            evidence_score -= self.config['past_semantic_weights']['narrative_blog_reduction']
         
-        # === STEP 1.5: TECHNICAL COMPOUND NOUN CLUE ===
-        # Check if this token is part of a known technical compound noun
         if self._is_technical_compound_noun(root_verb, doc):
-            return 0.0  # This is a legitimate compound noun, not an incorrect verb form
+            return 0.0
         
-        # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
         evidence_score = self._apply_linguistic_clues_past_tense(evidence_score, root_verb, doc, sentence)
-        
-        # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._apply_structural_clues_past_tense(evidence_score, context)
-        
-        # === STEP 4: SEMANTIC CLUES (MACRO-LEVEL) ===
         evidence_score = self._apply_semantic_clues_past_tense(evidence_score, root_verb, text, context)
-        
-        # === STEP 5: FEEDBACK PATTERNS (LEARNING CLUES) ===
         evidence_score = self._apply_feedback_clues_past_tense(evidence_score, root_verb, context)
         
-        return max(0.0, min(1.0, evidence_score))  # Clamp to valid range
+        return max(0.0, min(1.0, evidence_score))
 
     def _is_narrative_or_blog_content(self, text: str, context: Dict[str, Any]) -> bool:
-        """
-        Detect if content is narrative/blog style using enhanced ContextAnalyzer.
-        
-        Looks for blog/narrative indicators like:
-        - Frequent first-person pronouns ("we", "our", "I")  
-        - Contractions ("we're", "it's", "wasn't")
-        - Rhetorical questions
-        - Informal sentence structure
-        - Blog-specific phrases ("Why we switched", "Our journey")
-        - Past tense storytelling verbs
-        
-        Args:
-            text: The document text to analyze
-            context: Document context information
-            
-        Returns:
-            bool: True if content appears to be narrative/blog style
-        """
+        """Detect if content is narrative/blog style."""
         if not text:
             return False
             
-        # Import ContextAnalyzer to leverage enhanced narrative detection
         try:
             from validation.confidence.context_analyzer import ContextAnalyzer
             analyzer = ContextAnalyzer()
-            
-            # Use enhanced content type detection  
             content_result = analyzer.detect_content_type(text, context)
             
-            # Check if identified as narrative with reasonable confidence
-            if (content_result.content_type.value == 'narrative' and 
-                content_result.confidence > 0.4):
+            if content_result.content_type.value == 'narrative' and content_result.confidence > 0.4:
                 return True
             
-            # Additional check for blog-specific patterns even if not classified as narrative
-            # Look for strong blog indicators in the text
             text_lower = text.lower()
-            blog_strong_indicators = [
-                'why we', 'how we', 'what we', 'when we', 'we switched', 
-                'we decided', 'our journey', 'our experience', 'our story',
-                'we learned', 'we discovered', 'we realized', 'we started'
-            ]
+            strong_indicator_count = sum(1 for indicator in self.config['blog_strong_indicators'] if indicator in text_lower)
             
-            strong_indicator_count = sum(1 for indicator in blog_strong_indicators 
-                                       if indicator in text_lower)
-            
-            if strong_indicator_count >= 2:  # Multiple strong blog indicators
+            if strong_indicator_count >= self.config['min_counts']['blog_strong']:
                 return True
                 
-            # Check for narrative past tense verbs (storytelling characteristic)
-            narrative_verbs = ['started', 'began', 'decided', 'learned', 'discovered', 'realized', 'found', 'tried', 'built', 'created']
-            narrative_verb_count = sum(1 for verb in narrative_verbs 
-                                     if verb in text_lower)
+            narrative_verb_count = sum(1 for verb in self.config['narrative_verbs'] if verb in text_lower)
             
-            # Check for high first-person pronoun density (blog characteristic)
             words = text_lower.split()
-            if len(words) > 20:  # Only for substantial text
-                first_person_count = sum(1 for word in words 
-                                       if word in ['i', 'we', 'my', 'our', 'me', 'us'])
+            if len(words) > 20:
+                first_person_count = sum(1 for word in words if word in self.config['first_person_pronouns'])
                 first_person_ratio = first_person_count / len(words)
                 
-                # More than 3% first-person pronouns + narrative verbs suggests blog/narrative
-                if first_person_ratio > 0.03 and narrative_verb_count > 0:
+                if first_person_ratio > self.config['min_counts']['first_person_threshold'] and narrative_verb_count > 0:
                     return True
                     
         except ImportError:
-            # Fallback to simple pattern matching if ContextAnalyzer unavailable
             text_lower = text.lower()
-            
-            # Simple blog indicators with past tense context
-            simple_indicators = ['why we', 'we switched', 'our journey', 'we decided', 'we started']
-            if any(indicator in text_lower for indicator in simple_indicators):
+            if any(indicator in text_lower for indicator in self.config['blog_strong_indicators'][:5]):
                 return True
         
         return False
 
-    # === PAST TENSE EVIDENCE METHODS ===
-
     def _get_base_past_tense_evidence(self, root_verb: Token, doc: Doc, sentence: str) -> float:
         """Get base evidence score for past tense concerns."""
-        
-        # === PAST TENSE TYPE ANALYSIS ===
-        # Different past tense contexts have different evidence strengths
-        
-        # High-priority corrections (inappropriate in instructions/current descriptions)
-        inappropriate_past_verbs = {
-            'clicked', 'selected', 'entered', 'typed', 'configured', 'installed',
-            'ran', 'executed', 'performed', 'created', 'deleted', 'modified'
-        }
-        
-        # Medium-priority corrections (better as present for current behavior)
-        better_as_present = {
-            'displayed', 'showed', 'provided', 'contained', 'included',
-            'supported', 'enabled', 'allowed', 'required', 'returned'
-        }
-        
-        # Low-priority corrections (often acceptable in temporal contexts)
-        temporal_acceptable = {
-            'was', 'were', 'had', 'became', 'remained', 'continued',
-            'appeared', 'seemed', 'occurred', 'happened'
-        }
-        
-        # Check verb type
         verb_text = root_verb.text.lower()
         verb_lemma = root_verb.lemma_.lower()
+        verbs = self.config['past_tense_verbs']
+        base_evidence = self.config['past_base_evidence']
         
-        if verb_text in inappropriate_past_verbs or verb_lemma in inappropriate_past_verbs:
-            return 0.7  # High evidence for action verbs in past tense
-        elif verb_text in better_as_present or verb_lemma in better_as_present:
-            return 0.5  # Medium evidence for descriptive verbs in past tense
-        elif verb_text in temporal_acceptable or verb_lemma in temporal_acceptable:
-            return 0.3  # Lower evidence for state verbs in past tense
+        if verb_text in verbs['inappropriate_in_current_docs'] or verb_lemma in verbs['inappropriate_in_current_docs']:
+            return base_evidence['inappropriate']
+        elif verb_text in verbs['better_as_present'] or verb_lemma in verbs['better_as_present']:
+            return base_evidence['better_present']
+        elif verb_text in verbs['temporal_acceptable'] or verb_lemma in verbs['temporal_acceptable']:
+            return base_evidence['temporal_acceptable']
         else:
-            return 0.45  # Default evidence for past tense usage
+            return base_evidence['default']
 
     def _apply_linguistic_clues_past_tense(self, evidence_score: float, root_verb: Token, doc: Doc, sentence: str) -> float:
-        """
-        Apply linguistic analysis clues for past tense detection.
-        
-        Analyzes SpaCy linguistic features including temporal markers, context indicators,
-        and surrounding constructions to determine evidence strength for past tense corrections.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            root_verb: The root verb token in past tense
-            doc: The sentence document
-            sentence: The sentence text
-            
-        Returns:
-            float: Modified evidence score based on linguistic analysis
-        """
-        
+        """Apply linguistic clues for past tense detection."""
+        w = self.config['past_linguistic_weights']
         sent_lower = sentence.lower()
         
-        # === TEMPORAL CONTEXT INDICATORS ===
-        # Strong temporal indicators that justify past tense
+        for token in doc:
+            if token.lemma_.lower() in self.config['perfect_auxiliaries']:
+                if (token.head == root_verb or root_verb.head == token or abs(token.i - root_verb.i) <= 2):
+                    return 0.0
         
-        strong_temporal_indicators = [
-            'before this update', 'before the update', 'prior to this update',
-            'before this release', 'before the release', 'in previous versions',
-            'in earlier versions', 'previously', 'formerly', 'originally',
-            'this issue occurred', 'this problem occurred', 'the bug was',
-            'users experienced', 'this caused', 'this resulted in'
-        ]
+        if any(indicator in sent_lower for indicator in self.config['temporal_indicators']['strong']):
+            evidence_score -= w['strong_temporal_reduction']
         
-        if any(indicator in sent_lower for indicator in strong_temporal_indicators):
-            evidence_score -= 0.4  # Strong justification for past tense
+        if any(indicator in sent_lower for indicator in self.config['temporal_indicators']['weak']):
+            evidence_score -= w['weak_temporal_reduction']
         
-        # Weaker temporal indicators
-        weak_temporal_indicators = [
-            'in the past', 'historically', 'before', 'earlier', 'until now',
-            'up until', 'prior to', 'when', 'while', 'during'
-        ]
-        
-        if any(indicator in sent_lower for indicator in weak_temporal_indicators):
-            evidence_score -= 0.2  # Some justification for past tense
-        
-        # === LEGITIMATE TEMPORAL PATTERNS ===
-        # Use enhanced temporal detection
         if self._has_legitimate_temporal_context(doc, sentence):
-            evidence_score -= 0.3  # Comprehensive temporal analysis
+            evidence_score -= w['legitimate_temporal_reduction']
         
-        # === ISSUE/BUG REPORTING CONTEXT ===
-        # Past tense often appropriate for issue descriptions
+        if any(indicator in sent_lower for indicator in self.config['issue_indicators']):
+            evidence_score -= w['issue_indicator_reduction']
         
-        issue_indicators = [
-            'failed to', 'unable to', 'could not', 'did not', 'would not',
-            'was not', 'were not', 'error', 'issue', 'problem', 'bug'
-        ]
-        
-        if any(indicator in sent_lower for indicator in issue_indicators):
-            evidence_score -= 0.25  # Issue descriptions often need past tense
-        
-        # === NEGATION CONTEXT ===
-        # Negative past constructions often describe problems
-        
-        negative_past_patterns = ['was not', 'were not', 'did not', 'could not']
-        if any(pattern in sent_lower for pattern in negative_past_patterns):
-            evidence_score -= 0.2  # Negative past often legitimate
-        
-        # === SENTENCE STRUCTURE ANALYSIS ===
-        # Check for temporal subordinate clauses
+        if any(pattern in sent_lower for pattern in self.config['negative_past_patterns']):
+            evidence_score -= w['negative_past_reduction']
         
         for token in doc:
-            if token.dep_ == 'mark' and token.lemma_.lower() in ['when', 'while', 'before', 'after']:
-                # Check if this introduces a temporal clause
+            if token.dep_ == 'mark' and token.lemma_.lower() in self.config['subordinate_markers']:
                 if token.head and 'Tense=Past' in str(token.head.morph):
-                    evidence_score -= 0.15  # Temporal clauses may justify past tense
+                    evidence_score -= w['subordinate_clause_reduction']
         
-        # === CONDITIONAL AND HYPOTHETICAL CONSTRUCTIONS ===
-        # Past tense in conditionals may be appropriate
-        
-        conditional_markers = ['if', 'unless', 'suppose', 'imagine', 'what if']
-        if any(marker in sent_lower for marker in conditional_markers):
-            evidence_score -= 0.1  # Conditionals may use past tense
-        
-        # === QUOTED SPEECH OR REPORTED CONTENT ===
-        # Quoted content may preserve original tense
+        if any(marker in sent_lower for marker in self.config['conditional_markers'][:5]):
+            evidence_score -= w['conditional_reduction']
         
         if '"' in sentence or "'" in sentence:
-            evidence_score -= 0.15  # Quoted content may preserve past tense
-        
-        # === NAMED ENTITY RECOGNITION ===
-        # Named entities may affect past tense appropriateness
+            evidence_score -= w['quote_reduction']
         
         for token in doc:
             if hasattr(token, 'ent_type_') and token.ent_type_:
                 ent_type = token.ent_type_
-                
-                # Organization or product entities may reference historical states
-                if ent_type in ['ORG', 'PRODUCT', 'WORK_OF_ART']:
-                    # Check if entity is related to the past tense verb
-                    if abs(token.i - root_verb.i) <= 3:  # Within 3 tokens
-                        evidence_score -= 0.08  # Entity contexts may justify past tense
-                
-                # Person entities in past contexts often legitimate
-                elif ent_type in ['PERSON', 'GPE']:
-                    if abs(token.i - root_verb.i) <= 2:  # Within 2 tokens
-                        evidence_score -= 0.1  # Person/place historical references
-                
-                # Event or temporal entities strongly justify past tense
-                elif ent_type in ['EVENT', 'DATE', 'TIME']:
-                    if abs(token.i - root_verb.i) <= 4:  # Within 4 tokens
-                        evidence_score -= 0.2  # Temporal entities strongly justify past tense
-                
-                # Version or release entities may justify past tense
-                elif ent_type in ['CARDINAL', 'ORDINAL']:
-                    # Check if this might be a version number
+                if ent_type in self.config['entity_types']['organizational'] and abs(token.i - root_verb.i) <= 3:
+                    evidence_score -= w['entity_org_reduction']
+                elif ent_type in self.config['entity_types']['personal'] and abs(token.i - root_verb.i) <= 2:
+                    evidence_score -= w['entity_person_reduction']
+                elif ent_type in self.config['entity_types']['temporal'] and abs(token.i - root_verb.i) <= 4:
+                    evidence_score -= w['entity_temporal_reduction']
+                elif ent_type in self.config['entity_types']['numeric']:
                     if any(word in doc.text.lower() for word in ['version', 'release', 'update']):
                         if abs(token.i - root_verb.i) <= 3:
-                            evidence_score -= 0.12  # Version contexts may justify past tense
+                            evidence_score -= w['entity_cardinal_version_reduction']
         
-        # === COMPARISON AND CONTRAST STRUCTURES ===
-        # Comparing past vs. present states
-        
-        comparison_indicators = ['compared to', 'unlike', 'whereas', 'however', 'but now']
-        if any(indicator in sent_lower for indicator in comparison_indicators):
-            evidence_score -= 0.1  # Comparisons may need past tense
+        if any(indicator in sent_lower for indicator in self.config['comparison_indicators']):
+            evidence_score -= w['comparison_reduction']
         
         return evidence_score
 
     def _apply_structural_clues_past_tense(self, evidence_score: float, context: Dict[str, Any]) -> float:
-        """
-        Apply document structure clues for past tense detection.
-        
-        Analyzes document structure context including block types, heading levels,
-        and other structural elements to determine appropriate evidence adjustments
-        for past tense usage.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            context: Document context dictionary
-            
-        Returns:
-            float: Modified evidence score based on structural analysis
-        """
-        
+        """Apply document structure clues for past tense."""
+        w = self.config['past_structural_weights']
         block_type = context.get('block_type', 'paragraph')
         
-        # === TECHNICAL DOCUMENTATION CONTEXTS ===
+        preceding_heading = context.get('preceding_heading', '').lower()
+        current_heading = context.get('current_heading', '').lower()
+        parent_title = context.get('parent_title', '').lower()
+        
+        is_prerequisites_context = (
+            any(keyword in preceding_heading for keyword in self.config['prerequisite_keywords']) or
+            any(keyword in current_heading for keyword in self.config['prerequisite_keywords']) or
+            any(keyword in parent_title for keyword in self.config['prerequisite_keywords'])
+        )
+        
+        if is_prerequisites_context:
+            if block_type in ['list_item', 'ordered_list_item', 'unordered_list_item', 'paragraph']:
+                evidence_score -= w['prerequisites_reduction']
+        
         if block_type in ['code_block', 'literal_block']:
-            evidence_score -= 0.6  # Code blocks may contain past references
+            evidence_score -= w['code_block_reduction']
         elif block_type == 'inline_code':
-            evidence_score -= 0.4  # Inline code may reference past behavior
-        
-        # === HEADING CONTEXT ===
-        if block_type == 'heading':
+            evidence_score -= w['inline_code_reduction']
+        elif block_type == 'heading':
             heading_level = context.get('block_level', 1)
-            if heading_level == 1:  # H1 - Main headings
-                evidence_score += 0.1  # Main headings should generally be present
-            elif heading_level == 2:  # H2 - Section headings  
-                evidence_score += 0.05  # Section headings should be current
-            elif heading_level >= 3:  # H3+ - Subsection headings
-                evidence_score += 0.02  # Subsection headings less critical
-        
-        # === LIST CONTEXT ===
+            if heading_level == 1:
+                evidence_score += w['h1_boost']
+            elif heading_level == 2:
+                evidence_score += w['h2_boost']
+            elif heading_level >= 3:
+                evidence_score += w['h3_plus_boost']
         elif block_type in ['ordered_list_item', 'unordered_list_item']:
-            evidence_score += 0.1  # List items should generally be present/imperative
-            
-            # Nested list items may be more procedural
+            evidence_score += w['list_boost']
             if context.get('list_depth', 1) > 1:
-                evidence_score += 0.05  # Nested items often procedural steps
-        
-        # === TABLE CONTEXT ===
+                evidence_score += w['nested_list_boost']
         elif block_type in ['table_cell', 'table_header']:
-            evidence_score += 0.05  # Tables should generally use present tense
-        
-        # === ADMONITION CONTEXT ===
+            evidence_score += w['table_boost']
         elif block_type == 'admonition':
             admonition_type = context.get('admonition_type', '').upper()
-            if admonition_type in ['NOTE', 'TIP', 'HINT']:
-                evidence_score -= 0.05  # Notes may describe past situations
-            elif admonition_type in ['WARNING', 'CAUTION', 'DANGER']:
-                evidence_score -= 0.1  # Warnings may describe past problems
-            elif admonition_type in ['IMPORTANT', 'ATTENTION']:
-                evidence_score += 0.02  # Important notices should be current
-        
-        # === QUOTE/CITATION CONTEXT ===
+            if admonition_type in self.config['admonition_types']['informational']:
+                evidence_score -= w['note_tip_reduction']
+            elif admonition_type in self.config['admonition_types']['warning']:
+                evidence_score -= w['warning_reduction']
+            elif admonition_type in self.config['admonition_types']['important']:
+                evidence_score += w['important_boost']
         elif block_type in ['block_quote', 'citation']:
-            evidence_score -= 0.3  # Quotes may preserve original past tense
-        
-        # === EXAMPLE/SAMPLE CONTEXT ===
+            evidence_score -= w['quote_reduction']
         elif block_type in ['example', 'sample']:
-            evidence_score -= 0.2  # Examples may show past scenarios
-        
-        # === CHANGELOG/RELEASE NOTES CONTEXT ===
+            evidence_score -= w['example_reduction']
         elif block_type in ['changelog', 'release_notes']:
-            evidence_score -= 0.4  # Change logs legitimately use past tense
+            evidence_score -= w['changelog_reduction']
         
         return evidence_score
 
     def _apply_semantic_clues_past_tense(self, evidence_score: float, root_verb: Token, text: str, context: Dict[str, Any]) -> float:
-        """
-        Apply semantic and content-type clues for past tense detection.
-        
-        Analyzes high-level semantic context including content type, domain, audience,
-        and document purpose to determine evidence strength for past tense corrections.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            root_verb: The root verb token in past tense
-            text: Full document text
-            context: Document context dictionary
-            
-        Returns:
-            float: Modified evidence score based on semantic analysis
-        """
-        
+        """Apply semantic and content-type clues for past tense."""
+        w = self.config['past_semantic_weights']
         content_type = context.get('content_type', 'general')
         domain = context.get('domain', 'general')
         audience = context.get('audience', 'general')
         
-        # === CONTENT TYPE ANALYSIS ===
-        # Some content types strongly discourage past tense
         if content_type == 'procedural':
-            evidence_score += 0.25  # Procedures should use present/imperative
+            evidence_score += w['procedural_boost']
         elif content_type == 'api':
-            evidence_score += 0.2  # API docs should describe current behavior
+            evidence_score += w['api_boost']
         elif content_type == 'technical':
-            evidence_score += 0.15  # Technical writing should be current
+            evidence_score += w['technical_boost']
         elif content_type == 'tutorial':
-            evidence_score += 0.2  # Tutorials should be step-by-step present
+            evidence_score += w['tutorial_boost']
         elif content_type == 'legal':
-            evidence_score += 0.1  # Legal writing should be precise and current
+            evidence_score += w['legal_boost']
         elif content_type == 'academic':
-            evidence_score += 0.05  # Academic writing should be clear
+            evidence_score += w['academic_boost']
         elif content_type == 'marketing':
-            evidence_score += 0.1  # Marketing should focus on current benefits
+            evidence_score += w['marketing_boost']
         elif content_type == 'narrative':
-            evidence_score -= 0.1  # Narrative may legitimately use past tense
+            evidence_score -= w['narrative_reduction']
         
-        # === CONTENT TYPES THAT ACCEPT PAST TENSE ===
-        past_appropriate_types = ['release_notes', 'changelog', 'bug_report', 'issue_report']
-        if content_type in past_appropriate_types:
-            evidence_score -= 0.3  # These content types legitimately use past tense
+        if content_type in self.config['past_appropriate_content_types']:
+            evidence_score -= w['past_appropriate_reduction']
         
-        # === DOMAIN-SPECIFIC PATTERNS ===
         if domain in ['software', 'engineering', 'devops']:
-            evidence_score += 0.1  # Technical domains prefer current descriptions
+            evidence_score += w['software_domain_boost']
         elif domain in ['user-documentation', 'help']:
-            evidence_score += 0.15  # User docs should be current and actionable
+            evidence_score += w['user_docs_boost']
         elif domain in ['training', 'education']:
-            evidence_score += 0.1  # Training should be current
+            evidence_score += w['training_boost']
         elif domain in ['legal', 'compliance']:
-            evidence_score += 0.05  # Legal domains prefer current statements
+            evidence_score += w['legal_domain_boost']
         elif domain in ['support', 'troubleshooting']:
-            evidence_score -= 0.1  # Support may describe past problems
+            evidence_score -= w['support_domain_reduction']
         
-        # === AUDIENCE CONSIDERATIONS ===
         if audience in ['beginner', 'general', 'consumer']:
-            evidence_score += 0.1  # General audiences need current, clear language
+            evidence_score += w['beginner_audience_boost']
         elif audience in ['professional', 'business']:
-            evidence_score += 0.05  # Professional content should be current
+            evidence_score += w['professional_boost']
         elif audience in ['developer', 'technical', 'expert']:
-            evidence_score += 0.08  # Technical audiences expect current descriptions
+            evidence_score += w['technical_audience_boost']
         
-        # === DOCUMENT PURPOSE ANALYSIS ===
         if self._is_installation_documentation(text):
-            evidence_score += 0.2  # Installation docs should be current steps
-        
+            evidence_score += w['installation_docs_boost']
         if self._is_troubleshooting_documentation(text):
-            evidence_score -= 0.1  # Troubleshooting may describe past problems
-        
+            evidence_score -= w['troubleshooting_docs_reduction']
         if self._is_ui_documentation(text):
-            evidence_score += 0.18  # UI docs should describe current interface
-        
+            evidence_score += w['ui_docs_boost']
         if self._is_release_notes_documentation(text):
-            evidence_score -= 0.4  # Release notes legitimately use past tense
-        
+            evidence_score -= w['release_notes_reduction']
         if self._is_changelog_documentation(text):
-            evidence_score -= 0.4  # Changelogs legitimately use past tense
-        
+            evidence_score -= w['changelog_reduction']
         if self._is_bug_report_documentation(text):
-            evidence_score -= 0.3  # Bug reports may describe past issues
+            evidence_score -= w['bug_report_reduction']
         
-        # === DOCUMENT LENGTH CONTEXT ===
         doc_length = len(text.split())
-        if doc_length < 100:  # Short documents
-            evidence_score += 0.05  # Brief content should be current
-        elif doc_length > 5000:  # Long documents
-            evidence_score += 0.02  # Consistency important in long docs
+        if doc_length < 100:
+            evidence_score += w['doc_short_boost']
+        elif doc_length > 5000:
+            evidence_score += w['doc_long_boost']
         
         return evidence_score
 
     def _apply_feedback_clues_past_tense(self, evidence_score: float, root_verb: Token, context: Dict[str, Any]) -> float:
-        """
-        Apply feedback patterns for past tense detection.
-        
-        Incorporates learned patterns from user feedback including acceptance rates,
-        context-specific patterns, and correction success rates to refine evidence
-        scoring for past tense corrections.
-        
-        Args:
-            evidence_score: Current evidence score to modify
-            root_verb: The root verb token in past tense
-            context: Document context dictionary
-            
-        Returns:
-            float: Modified evidence score based on feedback analysis
-        """
-        
+        """Apply feedback patterns for past tense."""
+        w = self.config['feedback_weights']
         feedback_patterns = self._get_cached_feedback_patterns('verbs_past_tense')
-        
-        # === VERB-SPECIFIC FEEDBACK ===
         verb_lemma = root_verb.lemma_.lower()
         verb_text = root_verb.text.lower()
         
-        # Check if this specific verb is commonly accepted in past tense by users
-        accepted_past_verbs = feedback_patterns.get('often_accepted_past_verbs', set())
-        if verb_lemma in accepted_past_verbs or verb_text in accepted_past_verbs:
-            evidence_score -= 0.3  # Users consistently accept this verb in past tense
+        if verb_lemma in feedback_patterns.get('often_accepted_past_verbs', set()) or verb_text in feedback_patterns.get('often_accepted_past_verbs', set()):
+            evidence_score -= w['accepted_phrase_reduction']
         
-        flagged_past_verbs = feedback_patterns.get('often_flagged_past_verbs', set())
-        if verb_lemma in flagged_past_verbs or verb_text in flagged_past_verbs:
-            evidence_score += 0.2  # Users consistently flag this verb in past tense
+        if verb_lemma in feedback_patterns.get('often_flagged_past_verbs', set()) or verb_text in feedback_patterns.get('often_flagged_past_verbs', set()):
+            evidence_score += w['flagged_phrase_boost']
         
-        # === CONTEXT-SPECIFIC FEEDBACK ===
         content_type = context.get('content_type', 'general')
         context_patterns = feedback_patterns.get(f'{content_type}_past_patterns', {})
-        
         if verb_lemma in context_patterns.get('acceptable', set()):
-            evidence_score -= 0.2
+            evidence_score -= w['context_acceptable_reduction']
         elif verb_lemma in context_patterns.get('problematic', set()):
-            evidence_score += 0.25
+            evidence_score += w['context_problematic_boost']
         
-        # === TEMPORAL CONTEXT FEEDBACK ===
-        # Check patterns for temporal/historical contexts
-        temporal_patterns = feedback_patterns.get('temporal_context_patterns', {})
-        if verb_lemma in temporal_patterns.get('acceptable_in_temporal', set()):
-            evidence_score -= 0.15  # This verb acceptable in temporal contexts
+        if verb_lemma in feedback_patterns.get('temporal_context_patterns', {}).get('acceptable_in_temporal', set()):
+            evidence_score -= w['temporal_acceptable_reduction']
         
-        # === CORRECTION SUCCESS PATTERNS ===
-        correction_patterns = feedback_patterns.get('correction_success', {})
-        correction_success = correction_patterns.get(verb_lemma, 0.5)
-        
+        correction_success = feedback_patterns.get('correction_success', {}).get(verb_lemma, 0.5)
         if correction_success > 0.8:
-            evidence_score += 0.1  # Corrections highly successful
+            evidence_score += w['high_correction_success_boost']
         elif correction_success < 0.3:
-            evidence_score -= 0.15  # Corrections often rejected
+            evidence_score -= w['low_correction_success_reduction']
         
         return evidence_score
 
-    # Removed _get_cached_feedback_patterns_past_tense - using base class utility
-
     def _get_contextual_past_tense_message(self, flagged_text: str, ev: float, context: Dict[str, Any]) -> str:
-        """Generate context-aware error messages for past tense patterns."""
-        
+        """Generate context-aware error messages for past tense."""
         content_type = context.get('content_type', 'general')
+        thresholds = self.config['evidence_thresholds']
         
-        if ev > 0.9:
+        if ev > thresholds['past_high']:
             return f"Past tense '{flagged_text}' should be avoided in {content_type} documentation. Use present tense."
-        elif ev > 0.7:
+        elif ev > thresholds['past_medium']:
             return f"Consider replacing '{flagged_text}' with present tense for clearer {content_type} writing."
-        elif ev > 0.5:
+        elif ev > thresholds['past_low']:
             return f"Present tense is preferred over '{flagged_text}' in most technical writing."
         else:
             return f"The verb '{flagged_text}' may benefit from present tense for clarity."
@@ -1833,101 +1218,63 @@ class VerbsRule(BaseLanguageRule):
             return f"{subject_text} {correctly_conjugated}"
 
     def _conjugate_verb_for_subject(self, verb_lemma: str, subject: str) -> str:
-        """
-        Conjugate verb correctly based on subject using linguistic rules.
-        
-        Args:
-            verb_lemma: The base form of the verb
-            subject: The subject (text or role like 'system')
-            
-        Returns:
-            str: Correctly conjugated verb
-        """
+        """Conjugate verb correctly based on subject."""
         subject_lower = subject.lower()
         
-        # Handle pronouns and common subjects
-        if subject_lower in ['i', 'you', 'we', 'they']:
-            # 1st/2nd person and plural pronouns use base form
+        if subject_lower in self.config['plural_subjects']:
             return verb_lemma
-        elif subject_lower in ['he', 'she', 'it']:
-            # 3rd person singular pronouns use -s form
-            return self._add_s_ending(verb_lemma)
-        elif subject_lower in ['system', 'server', 'application', 'service', 'documentation', 
-                               'manual', 'configuration', 'database', 'interface', 'platform', 
-                               'framework', 'method', 'function', 'process', 'this', 'that']:
-            # Technical singular subjects use -s form
+        elif subject_lower in self.config['third_person_singular_subjects']:
             return self._add_s_ending(verb_lemma)
         else:
-            # Default to base form for safety
             return verb_lemma
 
     def _add_s_ending(self, verb_lemma: str) -> str:
         """Add appropriate -s ending to verb for 3rd person singular."""
         if verb_lemma.endswith('y') and len(verb_lemma) > 1 and verb_lemma[-2] not in 'aeiou':
-            # baby -> babies, try -> tries
             return verb_lemma[:-1] + 'ies'
         elif verb_lemma.endswith(('s', 'sh', 'ch', 'x', 'z')):
-            # pass -> passes, wash -> washes, catch -> catches
             return verb_lemma + 'es'
         elif verb_lemma.endswith('o') and len(verb_lemma) > 1 and verb_lemma[-2] not in 'aeiou':
-            # go -> goes, do -> does
             return verb_lemma + 'es'
         else:
-            # Regular verbs: work -> works, find -> finds
             return verb_lemma + 's'
 
     def _find_verb_subject(self, context_token: Token, verb_token: Token, doc: Doc = None) -> Token:
-        """
-        Find the subject of a verb using dependency parsing.
-        
-        Args:
-            context_token: Context token (like 'will' in 'you will find')
-            verb_token: The main verb token
-            doc: The document (optional)
-            
-        Returns:
-            Token: The subject token, or None if not found
-        """
+        """Find the subject of a verb using dependency parsing."""
         try:
-            # First, try to find subject from the verb token directly
             if hasattr(verb_token, 'children'):
                 for child in verb_token.children:
-                    if child.dep_ in ['nsubj', 'nsubjpass']:  # Nominal subject
+                    if child.dep_ in self.config['subject_dependencies']:
                         return child
             
-            # Then try from the context token (like 'will')
             if hasattr(context_token, 'head') and context_token.head:
                 head = context_token.head
                 if hasattr(head, 'children'):
                     for child in head.children:
-                        if child.dep_ in ['nsubj', 'nsubjpass']:
+                        if child.dep_ in self.config['subject_dependencies']:
                             return child
             
-            # Look at siblings of the context token
             if hasattr(context_token, 'head') and context_token.head:
                 head = context_token.head
                 if hasattr(head, 'children'):
                     for sibling in head.children:
-                        if sibling.dep_ in ['nsubj', 'nsubjpass'] and sibling != context_token:
+                        if sibling.dep_ in self.config['subject_dependencies'] and sibling != context_token:
                             return sibling
             
-            # Look backwards in the sentence for likely subjects
             if hasattr(context_token, 'i') and hasattr(context_token, 'doc'):
-                # Check tokens before the context token
                 for i in range(max(0, context_token.i - 5), context_token.i):
                     token = context_token.doc[i]
-                    if token.pos_ == 'PRON' and token.dep_ in ['nsubj', 'nsubjpass']:
+                    if token.pos_ == 'PRON' and token.dep_ in self.config['subject_dependencies']:
                         return token
-                    elif token.pos_ in ['NOUN', 'PROPN'] and token.dep_ in ['nsubj', 'nsubjpass']:
+                    elif token.pos_ in ['NOUN', 'PROPN'] and token.dep_ in self.config['subject_dependencies']:
                         return token
             
-            # Final fallback: look for pronouns near the beginning of the sentence
             if doc or (hasattr(context_token, 'sent')):
                 sentence = context_token.sent if hasattr(context_token, 'sent') else doc
                 if sentence:
                     for token in sentence:
                         if (token.pos_ == 'PRON' and 
-                            token.text.lower() in ['i', 'you', 'he', 'she', 'it', 'we', 'they']):
+                            token.text.lower() in self.config['plural_subjects'] + self.config['third_person_singular_subjects'][:3]):
                             return token
             
             return None
@@ -1936,113 +1283,56 @@ class VerbsRule(BaseLanguageRule):
             return None
 
     def _is_technical_compound_noun(self, token: Token, doc: Doc) -> bool:
-        """
-        Check if token is part of a known technical compound noun.
-        
-        Uses YAML configuration to identify compound nouns like "read access",
-        "write permissions", etc. where the first word might be mistaken for
-        an incorrect verb form.
-        
-        Args:
-            token: The token potentially part of a compound noun
-            doc: The document containing the token
-            
-        Returns:
-            bool: True if this is part of a technical compound noun
-        """
-        # Load technical compound nouns from YAML configuration
+        """Check if token is part of a known technical compound noun."""
         corrections = self.vocabulary_service.get_verbs_corrections()
         compound_nouns = corrections.get('technical_compound_nouns', {})
         
-        # Get all compound noun heads (the second part of compound nouns)
         all_compound_heads = []
         for category, heads in compound_nouns.items():
             all_compound_heads.extend(heads)
         
-        # Check if this token has a head that matches compound noun patterns
         if hasattr(token, 'head') and token.head:
             head_text = token.head.text.lower()
-            
-            # Special case: direct check for "access" as mentioned by user
-            if head_text == 'access':
-                return True
-            
-            # General check against all compound noun heads
             if head_text in all_compound_heads:
                 return True
         
-        # Also check if the next token forms a compound noun
         if token.i < len(doc) - 1:
             next_token = doc[token.i + 1]
             next_text = next_token.text.lower()
-            
-            # Check direct pattern match
             if next_text in all_compound_heads:
                 return True
         
         return False
 
-    # === HELPER METHODS FOR SEMANTIC ANALYSIS ===
-
-    # Removed _is_installation_documentation - using base class utility
-
-    # Removed _is_troubleshooting_documentation - using base class utility
-
-    # Removed _is_user_interface_documentation - using base class utility
-
     def _is_release_notes_documentation(self, text: str) -> bool:
         """Check if text appears to be release notes documentation."""
-        release_indicators = [
-            'release notes', 'release', 'version', 'changelog', 'change log',
-            'new features', 'improvements', 'bug fixes', 'fixed', 'resolved',
-            'added', 'removed', 'deprecated', 'enhanced', 'updated'
-        ]
-        
         text_lower = text.lower()
-        return sum(1 for indicator in release_indicators if indicator in text_lower) >= 3
+        count = sum(1 for indicator in self.config['release_notes_indicators'] if indicator in text_lower)
+        return count >= self.config['min_counts']['release_notes']
 
     def _is_roadmap_documentation(self, text: str) -> bool:
         """Check if text appears to be roadmap documentation."""
-        roadmap_indicators = [
-            'roadmap', 'future', 'planned', 'upcoming', 'next version',
-            'coming soon', 'will be', 'scheduled', 'timeline', 'milestone'
-        ]
-        
         text_lower = text.lower()
-        return sum(1 for indicator in roadmap_indicators if indicator in text_lower) >= 2
+        count = sum(1 for indicator in self.config['roadmap_indicators'] if indicator in text_lower)
+        return count >= self.config['min_counts']['roadmap']
 
     def _is_planning_documentation(self, text: str) -> bool:
         """Check if text appears to be planning documentation."""
-        planning_indicators = [
-            'plan', 'planning', 'strategy', 'goals', 'objectives', 'timeline',
-            'schedule', 'milestone', 'deliverable', 'project', 'initiative'
-        ]
-        
         text_lower = text.lower()
-        return sum(1 for indicator in planning_indicators if indicator in text_lower) >= 3
+        count = sum(1 for indicator in self.config['planning_indicators'] if indicator in text_lower)
+        return count >= self.config['min_counts']['planning']
 
     def _is_changelog_documentation(self, text: str) -> bool:
         """Check if text appears to be changelog documentation."""
-        changelog_indicators = [
-            'changelog', 'change log', 'changes', 'fixed', 'added', 'removed',
-            'changed', 'deprecated', 'security', 'unreleased', 'version'
-        ]
-        
         text_lower = text.lower()
-        return sum(1 for indicator in changelog_indicators if indicator in text_lower) >= 3
+        count = sum(1 for indicator in self.config['changelog_indicators'] if indicator in text_lower)
+        return count >= self.config['min_counts']['changelog']
 
     def _is_bug_report_documentation(self, text: str) -> bool:
         """Check if text appears to be bug report documentation."""
-        bug_report_indicators = [
-            'bug', 'issue', 'error', 'problem', 'defect', 'fault',
-            'reproduce', 'steps to reproduce', 'expected', 'actual',
-            'workaround', 'failed', 'not working'
-        ]
-        
         text_lower = text.lower()
-        return sum(1 for indicator in bug_report_indicators if indicator in text_lower) >= 3
-
-    # === NOUN-FORMS-AS-VERBS DETECTION METHODS ===
+        count = sum(1 for indicator in self.config['bug_report_indicators'] if indicator in text_lower)
+        return count >= self.config['min_counts']['bug_report']
 
     def _is_noun_form_as_verb_issue(self, token, doc, sentence: str) -> bool:
         """Check if token is a noun form being used incorrectly as a verb using YAML vocabulary."""
@@ -2058,18 +1348,15 @@ class VerbsRule(BaseLanguageRule):
 
     def _calculate_noun_verb_evidence(self, token, doc, sentence: str, text: str, context: dict) -> float:
         """Calculate evidence score for noun-forms-as-verbs issues."""
-        evidence_score = 0.8  # Base evidence - these are clear style violations
-        
-        # Adjust based on context
+        evidence_score = self.config['noun_verb_base_evidence']
         content_type = context.get('content_type', '')
+        w = self.config['noun_verb_content_weights']
         
-        # Higher evidence in formal documentation
         if content_type in ['documentation', 'tutorial', 'guide']:
-            evidence_score += 0.1
+            evidence_score += w['documentation_boost']
         
-        # Lower evidence in casual contexts
         if content_type in ['chat', 'social', 'informal']:
-            evidence_score -= 0.2
+            evidence_score -= w['informal_reduction']
         
         return max(0.0, min(1.0, evidence_score))
 
@@ -2110,23 +1397,331 @@ class VerbsRule(BaseLanguageRule):
 
     def _is_ui_documentation(self, text: str) -> bool:
         """Check if text appears to be user interface documentation."""
-        ui_indicators = [
-            'user interface', 'ui', 'gui', 'dialog', 'window', 'button', 'menu',
-            'toolbar', 'tab', 'panel', 'form', 'field', 'dropdown', 'checkbox',
-            'click', 'select', 'enter', 'type'
-        ]
-        
         text_lower = text.lower()
-        return sum(1 for indicator in ui_indicators if indicator in text_lower) >= 3
-
-    # === Feedback patterns for verbs ===
-    def _get_feedback_patterns_verbs(self) -> Dict[str, Any]:
-        return {
-            'accepted_future_phrases': {
-                'will be removed', 'will be deprecated', 'will be available'
-            },
-            'flagged_future_phrases': {
-                'will click', 'will go', 'will run'
-            },
-            'often_accepted_past_verbs': {'fixed', 'resolved', 'addressed'}
-        }
+        count = sum(1 for indicator in self.config['ui_documentation_indicators'] if indicator in text_lower)
+        return count >= self.config['min_counts']['ui_docs']
+    
+    def _find_verb_subject_for_agreement(self, verb_token: Token, doc: Doc) -> Optional[Token]:
+        """Find the grammatical subject of a verb for agreement checking."""
+        for child in verb_token.children:
+            if child.dep_ in self.config['subject_dependencies']:
+                return child
+        
+        if verb_token.dep_ != 'ROOT' and verb_token.head.pos_ == 'VERB':
+            for child in verb_token.head.children:
+                if child.dep_ in self.config['subject_dependencies']:
+                    return child
+        
+        return None
+    
+    def _has_subject_verb_disagreement(self, subject: Token, verb: Token, doc: Doc, corrections: Dict = None) -> bool:
+        """Check if subject and verb disagree in number."""
+        if corrections is None:
+            corrections = {}
+        
+        if self.adapter:
+            subject_is_plural = self.adapter.is_plural_corrected(subject, corrections)
+        else:
+            subject_is_plural = self._is_plural_subject(subject, doc)
+        
+        verb_is_plural_form = (verb.tag_ == self.config['verb_tags']['plural_base'])
+        
+        if subject_is_plural and verb_is_plural_form:
+            return False 
+        if not subject_is_plural and not verb_is_plural_form:
+            return False 
+        
+        # GUARD 1: Pronoun "you" always takes plural verb form
+        if subject.lemma_.lower() == 'you':
+            return False
+        
+        # GUARD 2: Verbs following modal verbs always use base form
+        for child in verb.children:
+            if child.dep_ == 'aux' and child.tag_ == self.config['verb_tags']['modal']:
+                return False
+        
+        # GUARD 3: Participles and infinitives never inflect for subject-verb agreement
+        if verb.tag_ in [self.config['verb_tags']['gerund'], self.config['verb_tags']['past_participle'], self.config['verb_tags']['base_form']]:
+            return False
+        
+        subject_is_plural = self._is_plural_subject(subject, doc)
+        verb_is_plural = self._is_plural_verb(verb)
+        
+        if subject.lemma_.lower() == 'there':
+            return False
+        
+        if self._is_collective_noun(subject):
+            return False
+        
+        if subject_is_plural and not verb_is_plural:
+            return True
+        if not subject_is_plural and verb_is_plural:
+            return True
+        
+        return False
+    
+    def _is_plural_subject(self, subject: Token, doc: Doc) -> bool:
+        """Determine if a subject is plural."""
+        has_conjunction = any(child.dep_ == 'conj' for child in subject.children)
+        if has_conjunction:
+            return True
+        
+        number = subject.morph.get('Number')
+        if number:
+            if 'Plur' in number:
+                return True
+            if 'Sing' in number:
+                return False
+        
+        if subject.tag_ in [self.config['noun_tags']['plural_common'], self.config['noun_tags']['plural_proper']]:
+            return True
+        if subject.tag_ in [self.config['noun_tags']['singular_common'], self.config['noun_tags']['singular_proper']]:
+            return False
+        
+        if subject.lemma_.lower() in self.config['plural_pronouns']:
+            return True
+        if subject.lemma_.lower() in self.config['singular_pronouns']:
+            return False
+        
+        return False
+    
+    def _is_plural_verb(self, verb: Token) -> bool:
+        """Determine if a verb is in plural form."""
+        number = verb.morph.get('Number')
+        if number:
+            if 'Plur' in number:
+                return True
+            if 'Sing' in number:
+                return False
+        
+        if verb.tag_ == self.config['verb_tags']['third_singular']:
+            return False
+        if verb.tag_ in [self.config['verb_tags']['plural_base'], self.config['verb_tags']['base_form']]:
+            return True
+        
+        if verb.lemma_.lower() == 'be':
+            if verb.text.lower() == 'was':
+                return False
+            if verb.text.lower() == 'were':
+                return True
+        
+        if verb.tag_ in [self.config['verb_tags']['modal'], self.config['verb_tags']['base_form']]:
+            return None
+        
+        return None
+    
+    def _is_collective_noun(self, token: Token) -> bool:
+        """Check if token is a collective noun."""
+        return token.lemma_.lower() in self.config['collective_nouns']
+    
+    def _calculate_agreement_evidence(
+        self, subject: Token, verb: Token, doc: Doc, sent_text: str, 
+        text: str, context: dict
+    ) -> float:
+        """Calculate evidence score for subject-verb agreement error."""
+        w = self.config['agreement_weights']
+        evidence_score = w['base_evidence']
+        
+        words_between = abs(verb.i - subject.i)
+        if words_between > w['distance_threshold']:
+            evidence_score -= w['distance_penalty']
+        
+        for child in subject.children:
+            if child.dep_ == 'prep':
+                evidence_score -= w['prep_phrase_penalty']
+        
+        if verb.i == subject.i + 1:
+            evidence_score += w['immediate_follow_boost']
+        
+        if context.get('block_type') in ['code_block', 'literal_block']:
+            evidence_score -= w['code_block_reduction']
+        
+        return max(0.0, min(1.0, evidence_score))
+    
+    def _get_contextual_agreement_message(
+        self, subject: Token, verb: Token, evidence_score: float
+    ) -> str:
+        """Generate error message for subject-verb agreement."""
+        subject_is_plural = self._is_plural_subject(subject, None)
+        
+        if subject_is_plural:
+            return f"Subject-verb agreement: '{subject.text}' is plural but '{verb.text}' is singular. Consider using the plural form."
+        else:
+            return f"Subject-verb agreement: '{subject.text}' is singular but '{verb.text}' is plural. Consider using the singular form."
+    
+    def _generate_agreement_suggestions(
+        self, subject: Token, verb: Token, doc: Doc
+    ) -> List[str]:
+        """Generate suggestions for fixing subject-verb agreement."""
+        suggestions = []
+        
+        subject_is_plural = self._is_plural_subject(subject, doc)
+        
+        # Try to get the correct verb form using pyinflect
+        if subject_is_plural:
+            # Need plural form (VBP)
+            correct_form = pyinflect.getInflection(verb.lemma_, tag='VBP')
+            if correct_form:
+                suggestions.append(f"Change '{verb.text}' to '{correct_form[0]}'")
+            else:
+                suggestions.append(f"Use plural verb form with '{subject.text}'")
+        else:
+            # Need singular form (VBZ)
+            correct_form = pyinflect.getInflection(verb.lemma_, tag='VBZ')
+            if correct_form:
+                suggestions.append(f"Change '{verb.text}' to '{correct_form[0]}'")
+            else:
+                suggestions.append(f"Use singular verb form with '{subject.text}'")
+        
+        # Add explanation
+        number_desc = "plural" if subject_is_plural else "singular"
+        suggestions.append(f"The subject '{subject.text}' is {number_desc}, so the verb must agree.")
+        
+        return suggestions
+    
+    def _is_weak_verb_with_action_noun(self, token: Token) -> bool:
+        """Check if token is a weak verb with an action noun object."""
+        if token.pos_ == 'VERB' and token.lemma_ in self.config['weak_verbs']:
+            for child in token.children:
+                if child.dep_ == 'dobj' and self._is_action_noun(child):
+                    return True
+        return False
+    
+    def _get_action_noun_object(self, verb_token: Token) -> Optional[Token]:
+        """Get the action noun that is the direct object of the weak verb."""
+        for child in verb_token.children:
+            if child.dep_ == 'dobj' and self._is_action_noun(child):
+                return child
+        return None
+    
+    def _is_action_noun(self, token: Token) -> bool:
+        """Check if a noun is derived from a verb (nominalization)."""
+        if token.pos_ != 'NOUN':
+            return False
+        
+        token_lower = token.text.lower()
+        if token_lower.endswith(tuple(self.config['action_noun_suffixes'])):
+            return True
+        
+        if token_lower in self.config['verb_noun_forms']:
+            return True
+        
+        return False
+    
+    def _calculate_nominalization_evidence(
+        self, verb: Token, noun: Token, doc, text: str, context: dict
+    ) -> float:
+        """Calculate evidence score for nominalized verb construction."""
+        w = self.config['nominalization_weights']
+        evidence_score = w['base_evidence']
+        
+        content_type = context.get('content_type', 'general')
+        if content_type in ['technical', 'procedural', 'reference', 'tutorial']:
+            evidence_score += w['technical_procedural_boost']
+        elif content_type in ['api', 'documentation']:
+            evidence_score += w['api_docs_boost']
+        elif content_type in ['narrative', 'blog', 'marketing']:
+            evidence_score -= w['narrative_reduction']
+        
+        if hasattr(doc, '__len__'):
+            if len(doc) > w['length_thresholds']['very_long']:
+                evidence_score += w['very_long_sentence_boost']
+            elif len(doc) > w['length_thresholds']['long']:
+                evidence_score += w['long_sentence_boost']
+        
+        block_type = context.get('block_type', 'paragraph')
+        if block_type in ['heading', 'title']:
+            evidence_score += w['heading_boost']
+        
+        if block_type in ['ordered_list_item', 'unordered_list_item']:
+            evidence_score += w['list_boost']
+        
+        if block_type in ['code_block', 'literal_block', 'inline_code']:
+            evidence_score -= w['code_reduction']
+        
+        return max(0.0, min(1.0, evidence_score))
+    
+    def _get_contextual_nominalization_message(self, verb: Token, noun: Token) -> str:
+        """Generate a message for a nominalized verb construction."""
+        return f"Consider replacing the weak verb-noun pair '{verb.text} {noun.text}' with a stronger, more direct verb."
+    
+    def _generate_smart_nominalization_suggestions(self, verb: Token, noun: Token) -> List[str]:
+        """Generate suggestions for de-nominalizing the verb."""
+        suggestions = []
+        noun_lower = noun.text.lower()
+        
+        if noun_lower in self.config['nominalization_to_verb']:
+            strong_verb = self.config['nominalization_to_verb'][noun_lower]
+            suggestions.append(f"Use a stronger verb: '{strong_verb}'. For example: 'The hardware and driver {strong_verb}...'")
+        else:
+            strong_verb = self._derive_verb_from_noun(noun.text)
+            if strong_verb and strong_verb != noun.text.lower():
+                suggestions.append(f"Rewrite using a stronger verb, such as '{strong_verb}'.")
+            else:
+                suggestions.append(f"Rewrite using a more direct verb instead of '{verb.text} {noun.text}'.")
+        
+        suggestions.append("Using direct verbs makes your writing clearer and more concise.")
+        
+        return suggestions[:3]
+    
+    def _derive_verb_from_noun(self, noun_text: str) -> Optional[str]:
+        """
+        Attempt to derive a verb form from a nominalized noun.
+        
+        Uses simple heuristics to strip common noun suffixes and add verb endings.
+        
+        Args:
+            noun_text: The noun text
+            
+        Returns:
+            Derived verb form, or None if unable to derive
+        """
+        noun_lower = noun_text.lower()
+        
+        # Handle -tion/-sion endings
+        if noun_lower.endswith('tion'):
+            base = noun_lower[:-4]  # Remove 'tion'
+            # configuration → configure
+            if base.endswith('a'):
+                return base + 'te'
+            else:
+                return base + 'e'
+        elif noun_lower.endswith('sion'):
+            base = noun_lower[:-4]  # Remove 'sion'
+            return base + 'e'
+        
+        # Handle -ment endings
+        elif noun_lower.endswith('ment'):
+            base = noun_lower[:-4]  # Remove 'ment'
+            # requirement → require, deployment → deploy
+            if base.endswith('e'):
+                return base
+            else:
+                return base + 'e'
+        
+        # Handle -ance/-ence endings
+        elif noun_lower.endswith('ance'):
+            base = noun_lower[:-4]  # Remove 'ance'
+            # assistance → assist, performance → perform
+            if base.endswith('t'):
+                return base
+            else:
+                return base + 'e'
+        elif noun_lower.endswith('ence'):
+            base = noun_lower[:-4]  # Remove 'ence'
+            return base + 'e'
+        
+        # Handle -al endings
+        elif noun_lower.endswith('al'):
+            base = noun_lower[:-2]  # Remove 'al'
+            # approval → approve
+            return base + 'e'
+        
+        # Handle -ing endings (gerunds)
+        elif noun_lower.endswith('ing'):
+            base = noun_lower[:-3]  # Remove 'ing'
+            # processing → process, logging → log
+            return base
+        
+        # If we can't derive it, return None
+        return None

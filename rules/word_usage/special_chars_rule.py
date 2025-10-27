@@ -39,6 +39,16 @@ class SpecialCharsRule(BaseWordUsageRule):
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
+        
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # This guard prevents the rule from running on any content within a code block.
+        if context and context.get('block_type') in ['code_block', 'inline_code', 'literal_block', 'listing', 'literal']:
+            return []
+        
+        # === SURGICAL GUARD FOR TECHNICAL SYNTAX ===
+        technical_syntax_pattern = r'\/usr\/|\/bin\/|\/etc\/|\/var\/|\/opt\/|\/home\/|C:\\|\\\\|@\.(service|socket)|\:\/\/|www\.'
+        if re.search(technical_syntax_pattern, text):
+            return []
             
         doc = nlp(text)
         

@@ -85,11 +85,27 @@ class MetadataConfig:
             logger.info("Using default configuration")
         
         # Set model cache directory if not specified
+        # OpenShift-compatible: Use /app/.cache instead of user home directory
         if not config['model_cache_dir']:
-            config['model_cache_dir'] = str(Path.home() / '.cache' / 'metadata_assistant')
+            # Check for environment variable first (set in Dockerfile for OpenShift)
+            env_cache_dir = os.getenv('METADATA_CACHE_DIR')
+            if env_cache_dir:
+                config['model_cache_dir'] = env_cache_dir
+            elif os.path.exists('/app/.cache'):
+                # Running in Docker/OpenShift - use /app/.cache
+                config['model_cache_dir'] = '/app/.cache/metadata_assistant'
+            else:
+                # Development environment - use user home directory
+                config['model_cache_dir'] = str(Path.home() / '.cache' / 'metadata_assistant')
         
         # Create model cache directory if it doesn't exist
-        os.makedirs(config['model_cache_dir'], exist_ok=True)
+        try:
+            os.makedirs(config['model_cache_dir'], exist_ok=True)
+        except PermissionError:
+            # Fallback to /tmp if can't create in preferred location
+            logger.warning(f"Cannot create cache dir {config['model_cache_dir']}, using /tmp")
+            config['model_cache_dir'] = '/tmp/metadata_assistant_cache'
+            os.makedirs(config['model_cache_dir'], exist_ok=True)
         
         # Set attributes from config
         for key, value in config.items():

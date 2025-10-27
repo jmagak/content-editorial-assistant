@@ -503,4 +503,82 @@ html {
     text-align: right;
     min-width: 0;
     flex-shrink: 1;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    /* Override forced white backgrounds for dark mode */
+    .pf-v5-c-card,
+    .readability-score-box,
+    .performance-progress-card,
+    .document-overview-grid .pf-v5-c-card {
+        background-color: #374151 !important;
+        border-color: #4B5563;
+    }
+
+    .grade-level-hero {
+        background: linear-gradient(135deg, #374151 0%, #4B5563 100%);
+        border-color: #6B7280;
+    }
+
+    .grade-level-hero .pf-v5-c-title {
+        color: #60A5FA !important;
+    }
+
+    .readability-score-box {
+        background: #374151 !important;
+        border-color: #6B7280;
+    }
+
+    .readability-score-box:hover {
+        border-color: #60A5FA;
+    }
+
+    .readability-score-display {
+        background: #374151 !important;
+    }
+
+    .analytics-section-title {
+        color: #60A5FA;
+        border-bottom-color: rgba(96, 165, 250, 0.2);
+    }
+
+    .analytics-section-title::before {
+        background: linear-gradient(to bottom, #60A5FA, #34D399);
+    }
+
+    .performance-metric-value,
+    .score-value,
+    .llm-score-display,
+    .performance-value {
+        color: #F9FAFB !important;
+    }
+
+    .performance-metric-label,
+    .pf-v5-c-card__title,
+    .pf-v5-c-card__body {
+        color: #E5E7EB;
+    }
+
+    .capability-status {
+        background: #4B5563;
+        color: #D1D5DB;
+        border-color: #6B7280;
+    }
+
+    .capability-status.available {
+        background: rgba(52, 211, 153, 0.15);
+        color: #34D399;
+        border-color: rgba(52, 211, 153, 0.3);
+    }
+
+    /* Card body text */
+    .pf-v5-c-card__body * {
+        color: #E5E7EB;
+    }
+
+    /* Progress bars for dark mode */
+    .pf-v5-c-progress {
+        background: #1F2937;
+    }
 } 

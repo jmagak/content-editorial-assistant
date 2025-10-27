@@ -10,6 +10,7 @@ import re
 from collections import defaultdict
 import yaml
 import os
+import threading
 
 # Import confidence and validation system components
 try:
@@ -37,6 +38,13 @@ try:
 except ImportError:
     Matcher = None
     PhraseMatcher = None
+
+# Module-level singleton for shared validation system across ALL rule instances
+_SHARED_VALIDATION_LOCK = threading.Lock()
+_SHARED_VALIDATION_INITIALIZED = False
+_SHARED_CONFIDENCE_CALCULATOR = None
+_SHARED_VALIDATION_PIPELINE = None
+_SHARED_VALIDATION_PIPELINE_CONFIG = None
 
 class BaseRule(ABC):
     """
@@ -96,53 +104,88 @@ class BaseRule(ABC):
     @classmethod
     def _initialize_validation_system(cls):
         """
-        Initialize the enhanced validation system components once at class level.
-        This includes confidence calculation and validation pipeline.
+        Initialize the enhanced validation system components ONCE for all rules (singleton pattern).
+        Uses thread-safe initialization to ensure only one validation system is created.
+        All rule instances will share this single validation system for efficiency.
         """
+        global _SHARED_VALIDATION_INITIALIZED, _SHARED_CONFIDENCE_CALCULATOR
+        global _SHARED_VALIDATION_PIPELINE, _SHARED_VALIDATION_PIPELINE_CONFIG
+        
         if not ENHANCED_VALIDATION_AVAILABLE:
             return
         
-        try:
-            # Initialize confidence calculator with default configuration
-            cls._confidence_calculator = ConfidenceCalculator(
-                cache_results=True,
-                enable_layer_caching=True
-            )
+        # Use thread-safe double-checked locking pattern
+        if _SHARED_VALIDATION_INITIALIZED:
+            # Already initialized, just reference the shared instances
+            cls._confidence_calculator = _SHARED_CONFIDENCE_CALCULATOR
+            cls._validation_pipeline = _SHARED_VALIDATION_PIPELINE
+            cls._validation_pipeline_config = _SHARED_VALIDATION_PIPELINE_CONFIG
+            return
+        
+        with _SHARED_VALIDATION_LOCK:
+            # Double-check inside lock (another thread might have initialized while we waited)
+            if _SHARED_VALIDATION_INITIALIZED:
+                cls._confidence_calculator = _SHARED_CONFIDENCE_CALCULATOR
+                cls._validation_pipeline = _SHARED_VALIDATION_PIPELINE
+                cls._validation_pipeline_config = _SHARED_VALIDATION_PIPELINE_CONFIG
+                return
             
-            # Initialize validation pipeline with optimized configuration for rule processing
-            cls._validation_pipeline_config = PipelineConfiguration(
-                # Enable all validators for comprehensive validation
-                enable_morphological=True,
-                enable_contextual=True,
-                enable_domain=True,
-                enable_cross_rule=True,
+            try:
+                print("🔧 Initializing shared validation system (once for all rules)...")
                 
-                # Optimize for rule-level validation
-                consensus_strategy=ConsensusStrategy.WEIGHTED_AVERAGE if ConsensusStrategy else None,
-                minimum_consensus_confidence=0.6,
+                # Initialize confidence calculator with default configuration
+                _SHARED_CONFIDENCE_CALCULATOR = ConfidenceCalculator(
+                    cache_results=True,
+                    enable_layer_caching=True
+                )
                 
-                # Enable early termination for performance
-                enable_early_termination=True,
-                high_confidence_threshold=0.85,
-                timeout_seconds=5.0,  # Faster timeout for rule-level validation
+                # Initialize validation pipeline with optimized configuration for rule processing
+                _SHARED_VALIDATION_PIPELINE_CONFIG = PipelineConfiguration(
+                    # Enable all validators for comprehensive validation
+                    enable_morphological=True,
+                    enable_contextual=True,
+                    enable_domain=True,
+                    enable_cross_rule=True,
+                    
+                    # Optimize for rule-level validation
+                    consensus_strategy=ConsensusStrategy.WEIGHTED_AVERAGE if ConsensusStrategy else None,
+                    minimum_consensus_confidence=0.6,
+                    
+                    # Enable early termination for performance
+                    enable_early_termination=True,
+                    high_confidence_threshold=0.85,
+                    timeout_seconds=5.0,  # Faster timeout for rule-level validation
+                    
+                    # Error handling
+                    continue_on_validator_error=True,
+                    minimum_validator_count=2,
+                    
+                    # Performance optimization
+                    enable_performance_monitoring=True,
+                    enable_audit_trail=False  # Disable detailed audit trail for performance
+                )
                 
-                # Error handling
-                continue_on_validator_error=True,
-                minimum_validator_count=2,
+                _SHARED_VALIDATION_PIPELINE = ValidationPipeline(_SHARED_VALIDATION_PIPELINE_CONFIG)
                 
-                # Performance optimization
-                enable_performance_monitoring=True,
-                enable_audit_trail=False  # Disable detailed audit trail for performance
-            )
-            
-            cls._validation_pipeline = ValidationPipeline(cls._validation_pipeline_config)
-            
-        except Exception as e:
-            print(f"Warning: Failed to initialize enhanced validation system: {e}")
-            # Set to None to indicate failure and fall back to basic error creation
-            cls._confidence_calculator = None
-            cls._validation_pipeline = None
-            cls._validation_pipeline_config = None
+                # Mark as initialized before setting class variables
+                _SHARED_VALIDATION_INITIALIZED = True
+                
+                # Set class-level references to the shared instances
+                cls._confidence_calculator = _SHARED_CONFIDENCE_CALCULATOR
+                cls._validation_pipeline = _SHARED_VALIDATION_PIPELINE
+                cls._validation_pipeline_config = _SHARED_VALIDATION_PIPELINE_CONFIG
+                
+                print("✅ Shared validation system initialized successfully")
+                
+            except Exception as e:
+                print(f"❌ Warning: Failed to initialize shared validation system: {e}")
+                # Set to None to indicate failure and fall back to basic error creation
+                _SHARED_CONFIDENCE_CALCULATOR = None
+                _SHARED_VALIDATION_PIPELINE = None
+                _SHARED_VALIDATION_PIPELINE_CONFIG = None
+                cls._confidence_calculator = None
+                cls._validation_pipeline = None
+                cls._validation_pipeline_config = None
 
     def _is_excepted(self, text_span: str) -> bool:
         """
@@ -209,6 +252,10 @@ class BaseRule(ABC):
         Returns:
             List of error dictionaries.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         pass
     
     # === spaCy MATCHER SUPPORT ===

@@ -48,8 +48,8 @@
                         <i class="fas fa-magic" aria-hidden="true"></i>
                     </div>
                     <div class="brand-text">
-                        <div class="brand-name">Content Editorial Assistant</div>
-                        <div class="brand-subtitle">AI-Powered Writing Analysis</div>
+                        <div class="brand-name">Content Editorial Assistant (Beta)</div>
+                        <div class="brand-subtitle">AI-Powered writing assistant</div>
                     </div>
                 </a>
             </div>
@@ -63,7 +63,7 @@
                     <button class="action-btn notifications-btn" title="Notifications">
                         <i class="fas fa-bell" aria-hidden="true"></i>
                         <span class="action-label">Alerts</span>
-                        <span class="notification-badge">3</span>
+                        <span class="notification-badge"></span>
                     </button>
                     <div class="user-menu">
                         <button class="action-btn user-btn" title="User Account">
@@ -89,19 +89,22 @@
                         <li class="pf-v5-c-nav__item">
                             <a href="{{ url_for('analyze_page') }}" class="pf-v5-c-nav__link">
                                 <i class="fas fa-search" aria-hidden="true"></i>
-                                Review product content
+                                Review content
+                                <span class="pf-v5-c-badge pf-m-read" style="margin-left: 8px; font-size: 0.7rem;">Beta</span>
                             </a>
                         </li>
                         <li class="pf-v5-c-nav__item">
-                            <a href="{{ url_for('create_blogs') }}" class="pf-v5-c-nav__link">
+                            <a href="{{ url_for('create_content') }}" class="pf-v5-c-nav__link">
                                 <i class="fas fa-pen-fancy" aria-hidden="true"></i>
-                                Review blogs
+                                Create content
+                                <span class="pf-v5-c-badge pf-m-read" style="margin-left: 8px; font-size: 0.7rem;">Prototype</span>
                             </a>
                         </li>
                         <li class="pf-v5-c-nav__item">
-                            <a href="#" class="pf-v5-c-nav__link">
-                                <i class="fas fa-bullhorn" aria-hidden="true"></i>
-                                Review marketing announcements
+                            <a href="#" class="pf-v5-c-nav__link pf-m-disabled" aria-disabled="true">
+                                <i class="fas fa-lightbulb" aria-hidden="true"></i>
+                                Metadata assistant
+                                <span class="pf-v5-c-badge pf-m-read" style="margin-left: 8px; font-size: 0.7rem;">Soon</span>
                             </a>
                         </li>
                     </ul>

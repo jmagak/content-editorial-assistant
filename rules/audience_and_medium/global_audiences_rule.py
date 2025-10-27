@@ -37,6 +37,10 @@ class GlobalAudiencesRule(BaseAudienceRule):
           - Negative constructions that can confuse non-native readers
           - Excessive sentence length that hinders comprehension
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -106,14 +110,29 @@ class GlobalAudiencesRule(BaseAudienceRule):
     def _calculate_negative_construction_evidence(self, neg_token, head, sentence, text: str, context: Dict[str, Any]) -> float:
         evidence: float = 0.55  # base for presence of explicit negation
 
+        # === ZERO FALSE POSITIVE GUARD: CONDITIONAL CLAUSES ===
+        # Negative constructions in conditional clauses are clear and necessary
+        # Examples: "If X does not match...", "When the system cannot connect..."
+        # These express logical conditions and are standard in technical documentation
+        sent_lower = sentence.text.lower().strip()
+        conditional_starters = ['if ', 'when ', 'unless ', 'where ', 'whenever ', 'while ']
+        
+        if any(sent_lower.startswith(starter) for starter in conditional_starters):
+            # Check if the negative construction is part of the conditional clause
+            # (before any comma that would end the conditional)
+            comma_pos = sent_lower.find(',')
+            neg_pos = neg_token.i - sentence.start
+            
+            if comma_pos == -1 or neg_pos < comma_pos:
+                # Negative is in the conditional clause - this is clear and necessary
+                return 0.0  # EXIT EARLY: Standard conditional logic
+        
         # === NARRATIVE/BLOG CONTENT CLUE (RELAX FORMAL RULES) ===
         # Detect narrative/blog writing style and significantly reduce evidence
         if self._is_narrative_or_blog_content(text, context):
             evidence -= 0.35  # Major reduction for narrative/blog content
             # In narrative/blog content, negative constructions ("wasn't", "didn't") are 
             # natural and appropriate for conversational storytelling tone
-
-        sent_lower = sentence.text.lower()
 
         # Linguistic: problematic complements and patterns
         acomp = next((c for c in head.children if c.dep_ == 'acomp'), None)

@@ -62,6 +62,11 @@ class PluralsRule(BaseLanguageRule):
         Calculates nuanced evidence scores for each detected issue using
         linguistic, structural, semantic, and feedback clues.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
+        
         errors = []
         if not nlp:
             return errors
@@ -492,30 +497,49 @@ class PluralsRule(BaseLanguageRule):
         return 0.5  # Default evidence for unknown issue types
 
     def _detect_potential_plural_modifier(self, token) -> bool:
-        """Detect tokens that could potentially be plural noun modifiers."""
+        """
+        Detect tokens that could potentially be plural noun modifiers.
+        """
         
-        # Early exit if basic conditions aren't met
+        # === SURGICAL GUARD: Technical Identifiers ===
+        token_text = token.text
+        if any(char in token_text for char in ['-', '_', '.', '/']) or any(char.isdigit() for char in token_text):
+            # This is a technical identifier, not a plural adjective
+            return False
+        
+        # === ZERO-FALSE-POSITIVE GUARD: Exclude Verbs ===
+        if token.pos_ == 'VERB':
+            return False
+        
+        # === ZERO FALSE POSITIVE GUARD: Legitimate Grammatical Roles ===
         if not (token.tag_ == 'NNS' and 
                 token.dep_ in ('compound', 'nsubj', 'amod') and
                 token.lemma_ != token.lower_):
-            return False
+            return False  # Excludes dobj, pobj, and other legitimate plural uses
         
-        # ZERO FALSE POSITIVE GUARD: Check exemption lists before flagging plural adjectives
+        # === CRITICAL FIX: ZERO FALSE POSITIVE GUARD FOR ACRONYMS/ABBREVIATIONS ===
+        if token.text.isupper() and len(token.text) >= 2:
+            return False  # Skip all-caps acronyms - they are NOT plurals
         
         # GUARD 1: Legitimate plural subjects
         # Don't flag plural nouns that are subjects of verbs
         if self._is_legitimate_plural_subject(token):
             return False  # Don't flag legitimate plural subjects
         
-        # GUARD 2: Check uncountable technical nouns exemption list
+        # GUARD 2: Legitimate plural objects
+        # Don't flag plural nouns that are objects of verbs that naturally imply multiplicity
+        if self._is_legitimate_plural_object(token):
+            return False  # Don't flag legitimate plural objects (e.g., "use templates")
+        
+        # GUARD 3: Check uncountable technical nouns exemption list
         if self._is_uncountable_technical_noun(token.text.lower()):
             return False  # Don't flag uncountable technical nouns like 'data'
         
-        # GUARD 3: Check proper nouns ending in 's' exemption list
+        # GUARD 4: Check proper nouns ending in 's' exemption list
         if self._is_proper_noun_ending_in_s(token.text.lower()):
             return False  # Don't flag proper nouns like 'kubernetes'
         
-        # GUARD 4: Check acceptable plural compounds list
+        # GUARD 5: Check acceptable plural compounds list
         if self._is_acceptable_plural_compound(token):
             return False  # Don't flag legitimate technical compounds like 'settings panel'
         
@@ -1293,8 +1317,10 @@ class PluralsRule(BaseLanguageRule):
         if token.dep_ != 'nsubj':
             return False
         
-        # Check if it's the subject of a verb (should have a verb head)
-        if not (hasattr(token, 'head') and hasattr(token.head, 'pos_') and token.head.pos_ == 'VERB'):
+        # Check if it's the subject of a verb or auxiliary (linking verbs are AUX)
+        # Examples: "repositories are synced" (AUX), "users access the system" (VERB)
+        if not (hasattr(token, 'head') and hasattr(token.head, 'pos_') and 
+                token.head.pos_ in ['VERB', 'AUX']):
             return False
         
         # Additional checks using YAML configuration
@@ -1318,3 +1344,71 @@ class PluralsRule(BaseLanguageRule):
         # Fallback: if it's clearly a legitimate plural subject pattern
         # Most plural subjects are legitimate unless they're clearly modifiers
         return True  # Default to allowing plural subjects
+    
+    def _is_legitimate_plural_object(self, token) -> bool:
+        """
+        Check if token is a legitimate plural object of a verb.
+        
+        This prevents false positives for cases like:
+        - "Use pre-built templates to create..." (templates = plural object ✓)
+        - "Create multiple applications" (applications = plural object ✓)
+        - "Configure several services" (services = plural object ✓)
+        - "Include different options" (options = plural object ✓)
+        
+        Production-ready approach using grammatical role analysis.
+        """
+        
+        # Check if this token is a direct object (dobj), prepositional object (pobj), 
+        # or oblique nominal (obl)
+        if token.dep_ not in ['dobj', 'pobj', 'obl', 'obj']:
+            return False
+        
+        # Get the verb governing this object
+        governing_verb = None
+        if token.dep_ in ['dobj', 'obj']:
+            # Direct object - head should be the verb
+            if hasattr(token, 'head') and hasattr(token.head, 'pos_') and token.head.pos_ == 'VERB':
+                governing_verb = token.head
+        elif token.dep_ in ['pobj', 'obl']:
+            # Prepositional object - need to find the verb through the preposition
+            if hasattr(token, 'head') and token.head.pos_ == 'ADP':  # Preposition
+                # The preposition's head should be the verb
+                if hasattr(token.head, 'head') and hasattr(token.head.head, 'pos_') and token.head.head.pos_ == 'VERB':
+                    governing_verb = token.head.head
+        
+        if not governing_verb:
+            return False
+        
+        # Verbs that naturally imply multiplicity and commonly take plural objects
+        verbs_implying_plurality = {
+            'use', 'create', 'include', 'configure', 'deploy', 'manage', 'support',
+            'provide', 'offer', 'contain', 'feature', 'display', 'show', 'list',
+            'select', 'choose', 'enable', 'disable', 'install', 'remove', 'delete',
+            'add', 'update', 'modify', 'change', 'edit', 'set', 'define', 'specify',
+            'process', 'handle', 'generate', 'produce', 'build', 'compile', 'execute',
+            'run', 'test', 'validate', 'verify', 'check', 'compare', 'analyze',
+            'review', 'examine', 'inspect', 'monitor', 'track', 'log', 'record',
+            'store', 'save', 'load', 'import', 'export', 'transfer', 'send', 'receive',
+            'filter', 'sort', 'group', 'organize', 'arrange', 'combine', 'merge',
+            'split', 'separate', 'divide', 'distribute', 'share', 'allocate'
+        }
+        
+        verb_lemma = governing_verb.lemma_.lower()
+        
+        # If the verb commonly takes plural objects, allow the plural
+        if verb_lemma in verbs_implying_plurality:
+            return True
+        
+        # Additional heuristic: if the object is modified by quantifiers or determiners
+        # that suggest plurality, it's legitimate
+        plurality_indicators = {'multiple', 'several', 'various', 'different', 'many', 'all', 'some'}
+        for child in token.children:
+            if child.lower_ in plurality_indicators:
+                return True
+        
+        # Check left siblings for plurality indicators
+        for left_sibling in token.lefts:
+            if left_sibling.lower_ in plurality_indicators:
+                return True
+        
+        return False

@@ -93,6 +93,11 @@ class AsciiDocBlock:
         if not content:
             return ""
         
+        # **CRITICAL FIX**: Decode HTML entities FIRST before any other processing
+        # This prevents issues where &#8217; (apostrophe) is seen as "8217" by rules
+        import html
+        content = html.unescape(content)
+        
         # Strip HTML inline formatting that comes from AsciiDoc conversion
         content = re.sub(r'<code>(.*?)</code>', r'\1', content)
         content = re.sub(r'<em>(.*?)</em>', r'\1', content)
@@ -101,15 +106,33 @@ class AsciiDocBlock:
         content = re.sub(r'<kbd>(.*?)</kbd>', r'\1', content)
         content = re.sub(r'<var>(.*?)</var>', r'\1', content)
         content = re.sub(r'<samp>(.*?)</samp>', r'\1', content)
+        
+        # **CRITICAL FIX**: Strip HTML link tags that Ruby Asciidoctor generates
+        # <a href="...">text</a> → text
+        content = re.sub(r'<a\s+href="[^"]*"[^>]*>(.*?)</a>', r'\1', content)
+        # <a href='...'>text</a> → text (single quotes)
+        content = re.sub(r"<a\s+href='[^']*'[^>]*>(.*?)</a>", r'\1', content)
 
-        # Replace AsciiDoc attributes {like-this} with a placeholder
-        content = re.sub(r'\{[^{}]+\}', ' placeholder ', content)
+        # **CRITICAL FIX**: Remove AsciiDoc link syntax completely to prevent false positives
+        # Handle link:URL[text] - extract just the link text
+        content = re.sub(r'link:https?://[^\s\[\]]+\[([^\]]*)\]', r'\1', content)
         
-        # Replace AsciiDoc link:...[] syntax with a placeholder for the analysis engine
-        content = re.sub(r'link:https?://[^\s\[\]]+\[.*?\]', ' linkref ', content)
+        # Handle xref:target[text] - extract just the text
+        content = re.sub(r'xref:[^\[]+\[([^\]]*)\]', r'\1', content)
         
-        # Clean up any extra spaces that might result from the replacements
-        content = re.sub(r'\s{2,}', ' ', content)
+        # Handle mailto:email[text] - extract just the text
+        content = re.sub(r'mailto:[^\[]+\[([^\]]*)\]', r'\1', content)
+        
+        # Replace remaining AsciiDoc attributes {like-this} with placeholder
+        # Do this AFTER link processing since links may contain attributes
+        content = re.sub(r'\{[^{}]+\}', 'placeholder', content)
+        
+        # Remove any standalone URLs that remain
+        content = re.sub(r'https?://[^\s\[\]]+', '', content)
+        
+        # Clean up any extra spaces or punctuation artifacts from replacements
+        content = re.sub(r'\s+([.,;:])', r'\1', content)  # Remove space before punctuation
+        content = re.sub(r'\s{2,}', ' ', content)  # Collapse multiple spaces
         
         return content.strip()
     
@@ -134,6 +157,24 @@ class AsciiDocBlock:
         
         return any(re.search(pattern, self.content) for pattern in formatting_patterns)
 
+    def has_link_macros(self) -> bool:
+        """
+        Check if this block contains link macros (link:URL[text], xref:target[text], etc).
+        This helps rules understand when text originates from link titles/labels.
+        """
+        if not self.content:
+            return False
+            
+        # Check for AsciiDoc link macro patterns
+        link_patterns = [
+            r'link:https?://[^\s\[\]]+\[[^\]]*\]',
+            r'xref:[^\[]+\[[^\]]*\]',
+            r'mailto:[^\[]+\[[^\]]*\]',
+            r'<a\s+href=["\'][^"\']*["\'][^>]*>.*?</a>' 
+        ]
+        
+        return any(re.search(pattern, self.content) for pattern in link_patterns)
+
     def should_skip_analysis(self) -> bool:
         """Determines if a block should be skipped during style analysis."""
         return self.block_type in [
@@ -145,8 +186,13 @@ class AsciiDocBlock:
         ]
 
     def get_context_info(self) -> Dict[str, Any]:
-        """Get contextual information for rule processing."""
-        return {
+        """
+        Get contextual information for rule processing.
+        
+        CRITICAL FIX: Propagates document-level metadata (like content_type) down to all blocks
+        by traversing up the parent chain to find the document root.
+        """
+        context = {
             'block_type': self.block_type.value,
             'level': self.level,
             'admonition_type': self.admonition_type.value if self.admonition_type else None,
@@ -154,8 +200,51 @@ class AsciiDocBlock:
             'title': self.title,
             'list_marker': self.list_marker,
             'source_location': self.source_location,
-            'contains_inline_formatting': self.has_inline_formatting()
+            'contains_inline_formatting': self.has_inline_formatting(),
+            'is_link_text': self.has_link_macros()
         }
+        
+        # === CRITICAL FIX: Propagate document-level metadata ===
+        # Traverse up the parent chain to find the document and extract metadata
+        document = self._get_document_root()
+        if document and document.attributes and document.attributes.named_attributes:
+            # Extract content_type from document attributes
+            # AsciiDoc attribute: :_mod-docs-content-type: PROCEDURE
+            content_type = document.attributes.named_attributes.get('_mod-docs-content-type')
+            if content_type:
+                context['content_type'] = content_type.upper()  # Normalize to uppercase
+            
+            # Also extract other useful document metadata
+            doc_type = document.attributes.named_attributes.get('doctype')
+            if doc_type:
+                context['doctype'] = doc_type
+            
+            # Extract document title if available
+            if document.title and not context.get('document_title'):
+                context['document_title'] = document.title
+        
+        # === NEW: Add parent context for structural inference ===
+        # Include parent block info for context-aware analysis
+        if self.parent:
+            context['parent_block_type'] = self.parent.block_type.value
+            if self.parent.title:
+                context['parent_title'] = self.parent.title
+        
+        return context
+    
+    def _get_document_root(self) -> Optional['AsciiDocBlock']:
+        """
+        Traverse up the parent chain to find the document root.
+        Returns the document block if found, None otherwise.
+        """
+        current = self
+        while current:
+            # Check if this is the document root
+            if current.block_type == AsciiDocBlockType.DOCUMENT:
+                return current
+            # Move up to parent
+            current = current.parent
+        return None
 
     def to_dict(self) -> Dict[str, Any]:
         """Converts the block to a dictionary for JSON serialization to the UI."""

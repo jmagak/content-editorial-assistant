@@ -76,6 +76,10 @@ class PrefixesRule(BaseLanguageRule):
         Uses sophisticated morphological and contextual analysis to distinguish between
         prefixes that should be closed and those where hyphenation may be appropriate.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp:
             return errors
@@ -399,10 +403,41 @@ class PrefixesRule(BaseLanguageRule):
         # Extract the base word after the prefix for analysis
         base_word = full_word.split('-')[1] if '-' in full_word else full_word[len(prefix):]
         
+        # === ZERO FALSE POSITIVE GUARD: Standard Technical Compound Adjectives ===
+        standard_hyphenated_terms = {
+            'in-memory', 'in-line', 'in-place', 'in-process', 'in-band', 'in-flight',
+            'in-house', 'in-depth', 'in-network', 'in-service', 'in-stream',
+            'co-location', 'co-processor', 're-entry', 'sub-domain',
+            'multi-queue', 'multi-core', 'multi-agent', 'read-only'
+        }
+        if full_word.lower() in standard_hyphenated_terms:
+            return 0.0  # Standard technical term - keep hyphen
+        
+        # === COMPOUND ADJECTIVE MODIFYING TECHNICAL NOUN GUARD ===
+        if hasattr(primary_token, 'dep_') and primary_token.dep_ in ['amod', 'compound']:
+            # Get the head (the noun this modifies)
+            if hasattr(primary_token, 'head'):
+                head_token = primary_token.head
+                head_text = head_token.text.lower() if hasattr(head_token, 'text') else ''
+                head_lemma = head_token.lemma_.lower() if hasattr(head_token, 'lemma_') else ''
+                
+                # Known technical nouns that are commonly modified by compound adjectives
+                technical_nouns = {
+                    'controller', 'interface', 'processor', 'system', 'network', 'device',
+                    'driver', 'service', 'protocol', 'architecture', 'configuration', 'mode',
+                    'channel', 'queue', 'buffer', 'cache', 'memory', 'storage', 'database',
+                    'server', 'client', 'node', 'cluster', 'instance', 'container', 'engine',
+                    'framework', 'platform', 'environment', 'component', 'module', 'layer',
+                    'manager', 'handler', 'adapter', 'wrapper', 'bridge', 'router', 'switch',
+                    'gateway', 'proxy', 'balancer', 'monitor', 'analyzer', 'scanner', 'detector',
+                    'collector', 'aggregator', 'scheduler', 'dispatcher', 'model', 'entity'
+                }
+                
+                # If this is a compound adjective modifying a technical noun, keep the hyphen
+                if head_text in technical_nouns or head_lemma in technical_nouns:
+                    return 0.0  # Compound adjective modifying technical noun - keep hyphen
+        
         # === READABILITY CLUES FOR STYLISTIC CHOICES ===
-        # Fine-tuning: Reduce evidence for closing prefix when word following prefix is:
-        # 1. A known technical term, OR 2. Starts with a capital letter
-        # This accounts for stylistic choices made for readability
         
         # Check if base word is a known technical term
         if self._is_known_technical_term(base_word.lower(), primary_token):

@@ -278,7 +278,7 @@ def emit_progress(session_id: str, step: str, status: str, detail: str, progress
             # Auto-add session if it doesn't exist (frontend might generate its own IDs)
             if session_id not in active_sessions:
                 active_sessions.add(session_id)
-                logger.debug(f"Auto-added session to active sessions: {session_id}")
+                logger.info(f"📡 Auto-added session to active sessions: {session_id}")
             
             data = {
                 'step': step,
@@ -291,7 +291,7 @@ def emit_progress(session_id: str, step: str, status: str, detail: str, progress
                 data['progress'] = str(progress_percent)
             
             _socketio.emit('progress_update', data, to=session_id)
-            logger.debug(f"Progress emitted to {session_id}: {step} - {status}")
+            logger.info(f"📡 WEBSOCKET EMIT → {session_id}: {progress_percent}% | {step} | {status}")
         else:
             # If no session ID, emit to all connected clients
             data = {

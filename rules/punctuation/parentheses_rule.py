@@ -35,6 +35,10 @@ class ParenthesesRule(BasePunctuationRule):
           - Period placement depends on whether parenthetical content is a complete sentence
           - Various contexts affect proper parentheses usage
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         context = context or {}
         

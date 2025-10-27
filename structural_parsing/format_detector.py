@@ -18,6 +18,7 @@ class FormatDetector:
         self.asciidoc_patterns = [
             (r'^=+\s+', 5),              # AsciiDoc headings are a very strong signal.
             (r'^:[\w-]+:', 5),           # Document attributes are unique to AsciiDoc.
+            (r'^\|={4,}\s*$', 5),        # AsciiDoc table delimiters (|====)
             (r'^\[(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]', 4), # Admonitions.
             (r'^\.(.+)', 3),             # Block titles are a strong signal.
             (r'^(include|image|link)::', 3), # AsciiDoc macros.
@@ -32,7 +33,7 @@ class FormatDetector:
             (r'^#+\s+', 5),              # Markdown headings are a very strong signal.
             (r'^```', 4),                # Code fences.
             (r'^>\s+', 2),                # Blockquotes.
-            (r'^\|\s*.*\s*\|', 2),          # Tables.
+            (r'^\|\s*[^=].*\s*\|', 1),   # Tables (but not AsciiDoc table delimiters |====).
             (r'^[\*\-\+]\s+', 1),          # Unordered lists (*, -, +) (lower score due to AsciiDoc ambiguity).
             (r'^\d+\.\s+', 1),              # Ordered lists.
         ]

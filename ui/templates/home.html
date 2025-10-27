@@ -16,14 +16,16 @@
 
     <!-- Main Options Grid -->
     <div class="options-grid">
-        <!-- Review Product Content -->
+        <!-- Review content -->
         <a href="{{ url_for('analyze_page') }}" class="option-card">
             <div class="card-icon product-icon">
                 <i class="fas fa-search" aria-hidden="true"></i>
             </div>
-            <h2 class="card-title">Review Product Content</h2>
+            <h2 class="card-title">Review content
+                <span class="pf-v5-c-badge pf-m-read" style="margin-left: 8px; font-size: 0.75rem; vertical-align: middle;">Beta</span>
+            </h2>
             <p class="card-description">
-                Analyze your documentation, technical content, and product materials for style, clarity, and compliance with industry standards.
+                Transform your technical documentation into polished, professional content. Our AI analyzes style, grammar, and compliance—ensuring every word aligns with IBM and Red Hat standards while maintaining crystal-clear communication.
             </p>
             <div class="card-action">
                 <span>Start Analysis</span>
@@ -31,30 +33,33 @@
             </div>
         </a>
 
-        <!-- Review Blog -->
-        <a href="{{ url_for('create_blogs') }}" class="option-card">
+        <!-- Create Content -->
+        <a href="{{ url_for('create_content') }}" class="option-card">
             <div class="card-icon blog-icon">
                 <i class="fas fa-pen-fancy" aria-hidden="true"></i>
             </div>
-            <h2 class="card-title">Review Blog</h2>
+            <h2 class="card-title">
+                Create Content
+                <span class="pf-v5-c-badge pf-m-read" style="margin-left: 8px; font-size: 0.75rem; vertical-align: middle;">Prototype</span>
+            </h2>
             <p class="card-description">
-                Create engaging blog posts with AI assistance. Transform your ideas into compelling content that resonates with your audience.
+                Accelerate your content creation journey from blank page to publication-ready. Your AI-powered research assistant and drafting companion helps you brainstorm ideas, structure narratives, and craft content that meets your documentation objectives.
             </p>
             <div class="card-action">
-                <span>Create Blog</span>
+                <span>Start Creating</span>
                 <i class="fas fa-arrow-right" aria-hidden="true"></i>
             </div>
         </a>
 
-        <!-- Review Marketing Announcement - Coming Soon -->
+        <!-- Metadata Assistant - Coming Soon -->
         <div class="option-card coming-soon">
             <div class="coming-soon-badge">Coming Soon</div>
             <div class="card-icon marketing-icon">
-                <i class="fas fa-bullhorn" aria-hidden="true"></i>
+                <i class="fas fa-lightbulb" aria-hidden="true"></i>
             </div>
-            <h2 class="card-title">Review Marketing Announcement</h2>
+            <h2 class="card-title">Metadata Assistant</h2>
             <p class="card-description">
-                Craft impactful marketing announcements and communications that capture attention and drive engagement.
+                Supercharge your content's discoverability with intelligent metadata suggestions. Our AI generates SEO-optimized titles, descriptions, and tags that help your content reach the right audience across search engines and platforms.
             </p>
             <div class="card-action">
                 <span>Coming Soon</span>
@@ -65,7 +70,7 @@
 
     <!-- Footer -->
     <div class="home-footer">
-        <p>AI-powered content analysis with the IBM and Red Hat style guides built in</p>
+        <p>Made with ❤️ for content creators.</p>
     </div>
 </div>
 

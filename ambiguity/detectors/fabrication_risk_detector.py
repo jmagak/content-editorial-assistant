@@ -174,6 +174,10 @@ class FabricationRiskDetector(AmbiguityDetector):
         
         Uses dependency parsing and POS analysis to avoid flagging legitimate usage.
         """
+        # === LINGUISTIC ANCHOR 0: AUXILIARY VERBS ===
+        if token.dep_ == 'aux':
+            return False  # EXIT EARLY: This is a grammatical helper verb.
+        
         word_lemma = token.lemma_.lower()
         
         # Only consider potentially problematic words
@@ -202,6 +206,11 @@ class FabricationRiskDetector(AmbiguityDetector):
         # === LINGUISTIC ANCHOR 4: ESTABLISHED TERMINOLOGY GUARD ===
         # Don't flag established technical terminology in proper contexts
         if self._is_established_technical_terminology(token, doc, context):
+            return False
+        
+        # === LINGUISTIC ANCHOR 5: CAUSATIVE CONSTRUCTION GUARD ===
+        # Don't flag causative constructions like "makes it easier", "makes code clearer"
+        if self._is_causative_construction(token, doc):
             return False
         
         return True  # Passed all guards - worth evidence analysis
@@ -387,10 +396,15 @@ class FabricationRiskDetector(AmbiguityDetector):
         return any(re.search(pattern, sentence) for pattern in technical_patterns)
     
     def _is_clear_procedural_instruction(self, sentence: str) -> bool:
-        """Check if this is a clear procedural instruction."""
+        """
+        Check if this is a clear procedural instruction.
+        """
         instruction_indicators = [
             'click', 'select', 'enter', 'run', 'execute', 'install',
-            'configure', 'set', 'enable', 'disable', 'start', 'stop'
+            'configure', 'set', 'enable', 'disable', 'start', 'stop',
+            # Standard procedural phrases
+            'perform this procedure', 'perform the procedure', 'perform these steps',
+            'complete the following', 'follow these steps', 'complete this procedure'
         ]
         return any(indicator in sentence for indicator in instruction_indicators)
     
@@ -445,7 +459,7 @@ class FabricationRiskDetector(AmbiguityDetector):
                 if child.dep_ == 'compound':
                     compound_subject = f"{doc[child.i-1].text.lower()} {subject_text}"
                     if any(tech in compound_subject for tech in technical_subjects):
-                return True
+                        return True
         
         return False
     
@@ -466,7 +480,7 @@ class FabricationRiskDetector(AmbiguityDetector):
                     'events', 'messages', 'notifications', 'configurations'
                 }
                 if obj_text in technical_objects:
-                return True
+                    return True
                 
                 # Check for compound technical objects
                 obj_phrase = ' '.join([t.text.lower() for t in child.subtree if not t.is_stop])
@@ -493,6 +507,93 @@ class FabricationRiskDetector(AmbiguityDetector):
         }
         
         return any(phrase in sentence for phrase in established_phrases)
+    
+    def _is_causative_construction(self, token, doc) -> bool:
+        """
+        LINGUISTIC ANCHOR: Is this a causative construction?
+        
+        Causative verbs like "make", "let", "have", "help" express cause-and-effect
+        relationships and are NOT vague when used in patterns like:
+        - "X makes Y easier/better/clearer" (make + object + adjective/comparative)
+        - "X makes it possible to..." (make + object + adjective + infinitive)
+        - "X makes debugging faster" (clear logical relationship)
+        
+        These constructions describe logical relationships, not unverified actions.
+        
+        Args:
+            token: The potential causative verb token
+            doc: The spaCy doc
+            
+        Returns:
+            bool: True if this is a causative construction (should NOT be flagged)
+        """
+        word_lemma = token.lemma_.lower()
+        
+        # Only applies to causative verbs
+        causative_verbs = {'make', 'let', 'help', 'have', 'get', 'cause', 'enable', 'allow'}
+        if word_lemma not in causative_verbs:
+            return False
+        
+        # Pattern 1: make + object + adjective/comparative
+        # "makes it easier", "makes code clearer", "makes debugging faster"
+        for child in token.children:
+            if child.dep_ in ('dobj', 'nsubj', 'pobj'):
+                # Check if the object has an adjective or comparative modifier
+                for obj_child in child.children:
+                    if obj_child.pos_ == 'ADJ':
+                        # Found: make + object + adjective
+                        return True
+                    if obj_child.tag_ in ('JJR', 'RBR'):  # Comparative adjective/adverb
+                        # Found: make + object + comparative (easier, faster, better)
+                        return True
+                    # Check for participles and compound adjectives
+                    # "self-documenting", "well-written", etc.
+                    if obj_child.tag_ in ('VBG', 'VBN'):  # Present/past participle
+                        return True
+                    # Hyphenated compound adjectives may be tagged as NOUN
+                    if '-' in obj_child.text and obj_child.dep_ in ('amod', 'acomp'):
+                        return True
+                
+                # Pattern 2: make + object + possible/difficult/necessary/etc.
+                # Look for xcomp (open clausal complement) or ccomp (clausal complement)
+                for obj_child in child.children:
+                    if obj_child.dep_ in ('xcomp', 'ccomp'):
+                        # "makes it possible to...", "makes code self-documenting"
+                        return True
+                
+                # Check siblings for adjectives (sometimes parsed differently)
+                if child.i + 1 < len(doc):
+                    next_token = doc[child.i + 1]
+                    if next_token.pos_ == 'ADJ' or next_token.tag_ in ('JJR', 'RBR', 'VBG', 'VBN'):
+                        # Adjacent adjective/participle after object
+                        return True
+                    # Check for hyphenated adjectives
+                    if '-' in next_token.text:
+                        return True
+        
+        # Pattern 3: make + adjective (sometimes object is implicit)
+        # "makes easier", "makes clearer"
+        for child in token.children:
+            if child.pos_ == 'ADJ' or child.tag_ in ('JJR', 'RBR'):
+                return True
+        
+        # Pattern 4: make + object + infinitive
+        # "makes you think", "lets users configure"
+        for child in token.children:
+            if child.dep_ in ('dobj', 'nsubj'):
+                for obj_child in child.children:
+                    if obj_child.pos_ == 'VERB' and obj_child.tag_ in ('VB', 'VBP'):
+                        # Infinitive verb after object
+                        return True
+        
+        # Pattern 5: make + clausal complement (direct)
+        # "makes your code self-documenting" → makes + documenting (ccomp)
+        for child in token.children:
+            if child.dep_ in ('ccomp', 'xcomp'):
+                # Direct clausal complement indicates causative construction
+                return True
+        
+        return False
     
     def _analyze_linguistic_usage_context(self, token, doc) -> float:
         """
@@ -597,9 +698,30 @@ class FabricationRiskDetector(AmbiguityDetector):
         EVIDENCE FACTOR 5: Analyze domain appropriateness.
         
         Returns modifier based on whether this level of vagueness is appropriate.
+        Includes contextual awareness for procedural documentation.
         """
         modifier = 0.0
         sentence = context.sentence.lower()
+        document_context = context.document_context or {}
+        
+        # === NEW: CONTEXTUAL CLUE FOR PROCEDURAL CONTENT ===
+        # "Perform" is standard and appropriate in procedural documentation
+        if word_lemma == 'perform':
+            # Check for procedural document type or block type
+            content_type = document_context.get('content_type', '').upper()
+            block_type = document_context.get('block_type', '').lower()
+            
+            is_procedure_doc = content_type == 'PROCEDURE'
+            is_procedure_block = block_type in ['procedure', 'step']
+            is_procedure_phrase = any(phrase in sentence for phrase in [
+                'perform this procedure', 'perform the procedure', 
+                'perform these steps', 'perform this task'
+            ])
+            
+            if is_procedure_doc or is_procedure_block or is_procedure_phrase:
+                # In procedural context, "Perform" is standard. Drastically reduce evidence.
+                modifier -= 0.80  # Massive reduction - eliminates the false positive
+        # === END NEW ===
         
         # Check for domain-specific contexts where the word is appropriate
         if word_lemma in ['monitor', 'monitoring']:

@@ -176,20 +176,19 @@ class BlockProcessor:
                 self._flatten_recursively(child)
             return
 
-        # For table blocks, add them and also process their children (rows and cells)
+        # For table blocks, add them but DON'T flatten their nested structure.
+        # Keep all table content (rows, cells, nested blocks) within the table hierarchy.
+        # This prevents confusion where nested lists/notes appear as separate blocks.
         if block_type_value == 'table':
             self.flat_blocks.append(block)
-            # Process table rows and cells
-            for child in block.children:
-                self._flatten_recursively(child)
+            # DON'T recursively flatten children - keep hierarchy intact
+            # The table block's to_dict() will serialize the full structure with errors
             return
 
-        # For table cells, add them to the flat list since they contain analyzable content
-        if block_type_value == 'table_cell':
-            self.flat_blocks.append(block)
-            # Also process any children they might have
-            for child in block.children:
-                self._flatten_recursively(child)
+        # Skip table cells and rows entirely from flattening - they're part of table structure
+        if block_type_value in ['table_cell', 'table_row']:
+            # DON'T add to flat list, DON'T process children
+            # Everything stays hierarchical within the table
             return
 
         # For all other displayable block types (paragraphs, lists, etc.),
@@ -197,7 +196,7 @@ class BlockProcessor:
         # (like list items) from the block's .children property.
         # We explicitly exclude child-only types that are rendered by their parents.
         
-        if block_type_value not in ['list_item', 'description_list_item', 'table_row', 'table_cell', 'table']:
+        if block_type_value not in ['list_item', 'description_list_item']:
              self.flat_blocks.append(block)
 
     def _create_heading_from_section(self, section_block: Any) -> Any:

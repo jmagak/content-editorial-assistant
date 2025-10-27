@@ -34,6 +34,10 @@ class PossessivesRule(BaseLanguageRule):
         Returns:
             List of error dictionaries with evidence-based scoring
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp:
             return errors

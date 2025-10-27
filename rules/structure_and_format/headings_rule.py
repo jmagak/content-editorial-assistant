@@ -34,11 +34,19 @@ class HeadingsRule(BaseStructureRule):
         Analyzes headings for style violations using evidence-based scoring.
         Each potential violation gets nuanced evidence assessment for precision.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not context or context.get('block_type') != 'heading' or not nlp:
             return errors
         
-        topic_type = context.get('topic_type', 'Concept')
+        # Get content type from context (procedure, concept, reference)
+        # FIXED: Changed from 'topic_type' to 'content_type' to match what backend passes
+        content_type = context.get('content_type', 'concept')
+        # Normalize to title case for display purposes
+        topic_type = content_type.title() if content_type else 'Concept'
 
         for i, sentence in enumerate(sentences):
             doc = nlp(sentence)
@@ -438,7 +446,8 @@ class HeadingsRule(BaseStructureRule):
             return 0.0
         
         # Special guard: Procedural content allows gerunds
-        if topic_type == 'Procedure':
+        # Check both title case and lowercase versions
+        if topic_type in ['Procedure', 'procedure'] or context.get('content_type') == 'procedure':
             return 0.0
         
         # Special guard: Legitimate gerund usage in specific contexts
@@ -469,10 +478,11 @@ class HeadingsRule(BaseStructureRule):
         # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._adjust_evidence_for_structure_context(evidence_score, context)
         
-        # Topic type adjustments
-        if topic_type == 'Concept':
+        # Topic type adjustments - check both title case and lowercase
+        topic_lower = topic_type.lower() if topic_type else 'concept'
+        if topic_lower == 'concept' or context.get('content_type') == 'concept':
             evidence_score += 0.2  # Concept topics should avoid gerunds
-        elif topic_type == 'Reference':
+        elif topic_lower == 'reference' or context.get('content_type') == 'reference':
             evidence_score += 0.1  # Reference topics prefer direct statements
         
         # === STEP 4: SEMANTIC CLUES (MACRO-LEVEL) ===
@@ -494,10 +504,23 @@ class HeadingsRule(BaseStructureRule):
     # === HELPER METHODS FOR VIOLATION DETECTION ===
 
     def _find_capitalization_issues(self, sentence: str, doc: 'Doc', nlp) -> List[str]:
-        """Find words that are incorrectly capitalized in title case."""
+        """
+        Find words that are incorrectly capitalized in title case.
+        
+        CRITICAL FIX: First check if the heading is already in valid sentence case.
+        Sentence case means: first word capitalized, proper nouns/technical terms capitalized,
+        everything else lowercase. This is the CORRECT format per style guides.
+        """
         words = sentence.split()
         if len(words) <= 1:
             return []
+        
+        # === ZERO FALSE POSITIVE GUARD: Check if already in valid sentence case ===
+        # If the heading has only a few capitalized words (1-2) after the first word,
+        # and they appear to be technical terms or proper nouns, it's likely already
+        # in correct sentence case format. Don't flag it.
+        if self._is_valid_sentence_case(sentence, words, nlp):
+            return []  # Already in correct sentence case
         
         capitalized_words = []
         for word in words[1:]:  # Skip first word
@@ -518,16 +541,89 @@ class HeadingsRule(BaseStructureRule):
                     capitalized_words.append(word)
         
         return capitalized_words
+    
+    def _is_valid_sentence_case(self, sentence: str, words: List[str], nlp) -> bool:
+        """
+        Check if a heading is already in valid sentence case format.
+        
+        Sentence case criteria:
+        - First word is capitalized (implicit, always true for headings)
+        - Most words (except first) are lowercase
+        - Only proper nouns, acronyms, and technical terms are capitalized
+        
+        Returns:
+            True if heading is already in valid sentence case
+            False if heading appears to be in title case (needs fixing)
+        """
+        if len(words) <= 1:
+            return True  # Single word is always valid
+        
+        # Count capitalized words after first word (excluding code blocks and special chars)
+        capitalized_count = 0
+        total_significant_words = 0
+        
+        for i, word in enumerate(words[1:], start=1):
+            # Strip punctuation and check if it's a real word
+            clean_word = word.strip('.,!?:;()[]{}"`\'')
+            if not clean_word or len(clean_word) < 2:
+                continue  # Skip single chars and punctuation
+            
+            # Skip code blocks (backticks, angle brackets, underscores)
+            if '`' in word or '<' in word or '>' in word or word.startswith('_'):
+                continue
+            
+            total_significant_words += 1
+            
+            if clean_word[0].isupper():
+                capitalized_count += 1
+        
+        if total_significant_words == 0:
+            return True  # No significant words to analyze
+        
+        # Calculate ratio of capitalized to total words
+        cap_ratio = capitalized_count / total_significant_words
+        
+        # === DECISION LOGIC ===
+        # If 50% or fewer words are capitalized, it's likely sentence case (correct)
+        # If more than 50% are capitalized, it's likely title case (incorrect)
+        # 
+        # Examples:
+        # "Configuring an Ethernet connection" -> 1/3 = 33% -> Sentence case ✓
+        # "Configuring An Ethernet Connection" -> 3/3 = 100% -> Title case ✗
+        # "Installing The System" -> 2/2 = 100% -> Title case ✗
+        # "Installing and Configuring the System" -> 3/4 = 75% -> Title case ✗
+        if cap_ratio <= 0.5:
+            return True  # Likely sentence case (correct format)
+        
+        # Special case: If capitalization ratio is high (> 60%), it's title case
+        # regardless of the number of words
+        if cap_ratio > 0.6:
+            return False  # Clearly title case
+        
+        # Middle ground (50-60% capitalized):
+        # If only 1 capitalized word in a longer heading, might be a technical term
+        if capitalized_count == 1 and total_significant_words >= 4:
+            return True  # Acceptable single technical term in longer heading
+        
+        return False  # Likely title case (needs correction)
 
     def _is_excepted(self, text: str) -> bool:
         """Check if text is in exception list."""
         # Common exceptions that should be capitalized
         exceptions = {
+            # Acronyms and abbreviations
             'API', 'SDK', 'HTTP', 'HTTPS', 'JSON', 'XML', 'HTML', 'CSS', 'SQL',
             'REST', 'SOAP', 'URL', 'URI', 'UI', 'UX', 'AI', 'ML', 'CI', 'CD',
+            'TCP', 'IP', 'DNS', 'DHCP', 'SSH', 'FTP', 'SMTP', 'TLS', 'SSL',
+            'VPN', 'LAN', 'WAN', 'NIC', 'MAC', 'NAT', 'VLAN', 'SLAAC',
+            # Company/product names
             'AWS', 'GCP', 'IBM', 'Microsoft', 'Google', 'Apple', 'Oracle',
             'GitHub', 'GitLab', 'Docker', 'Kubernetes', 'Node.js', 'React',
-            'Vue.js', 'Angular', 'TypeScript', 'JavaScript', 'Python', 'Java'
+            'Vue.js', 'Angular', 'TypeScript', 'JavaScript', 'Python', 'Java',
+            'NetworkManager', 'RedHat', 'Linux', 'Unix', 'Windows', 'macOS',
+            # Technical terms (proper nouns in technology)
+            'Ethernet', 'WiFi', 'Wi-Fi', 'Bluetooth', 'Internet', 'IPv4', 'IPv6',
+            'Boolean', 'POSIX', 'ASCII', 'Unicode', 'UTF-8'
         }
         return text in exceptions
 
@@ -1038,7 +1134,8 @@ class HeadingsRule(BaseStructureRule):
         
         # Weak gerunds in concept topics are clear violations
         weak_gerunds = ['understanding', 'getting', 'learning', 'knowing', 'using']
-        if gerund_lemma in weak_gerunds and topic_type == 'Concept':
+        topic_lower = topic_type.lower() if topic_type else 'concept'
+        if gerund_lemma in weak_gerunds and topic_lower == 'concept':
             return True
         
         return False
@@ -1050,7 +1147,8 @@ class HeadingsRule(BaseStructureRule):
         gerund_lemma = first_token.lemma_.lower()
         
         # Any gerund in concept or reference topics might be a violation
-        if topic_type in ['Concept', 'Reference']:
+        topic_lower = topic_type.lower() if topic_type else 'concept'
+        if topic_lower in ['concept', 'reference']:
             return True
         
         return False

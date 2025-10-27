@@ -1,0 +1,208 @@
+# Adverbs - Only Configuration
+# Manages patterns and thresholds for detecting ambiguous "only" placement
+# Used by AdverbsOnlyRule for evidence-based ambiguity detection
+
+# Evidence thresholds
+evidence_thresholds:
+  min_threshold: 0.1
+  base_score: 0.5
+  high_ambiguity: 0.8
+  moderate_ambiguity: 0.5
+  low_ambiguity: 0.3
+
+# Linguistic clue weights
+linguistic_weights:
+  classic_ambiguity_boost: 0.8
+  clear_modification_reduction: 0.6
+  position_beginning_reduction: 0.2
+  position_middle_boost: 0.3
+  position_end_det_noun_reduction: 0.1
+  position_end_other_boost: 0.1
+  advmod_noun_reduction: 0.2
+  advmod_verb_boost: 0.1
+  unclear_dependency_boost: 0.3
+  article_prev_reduction: 0.2
+  verb_prev_boost: 0.1
+  noun_next_reduction: 0.2
+  det_next_reduction: 0.25
+  prep_next_reduction: 1.0
+  conditional_next_reduction: 0.1
+  verb_next_boost: 0.2
+  entity_reduction: 0.15
+  numeric_reduction: 0.1
+  single_verb_reduction: 0.1
+  multi_verb_boost: 0.2
+  conjunction_boost: 0.1
+
+# Structural clue weights
+structural_weights:
+  code_block_reduction: 0.8
+  inline_code_reduction: 0.6
+  table_reduction: 0.3
+  h1_h2_reduction: 0.4
+  h3_plus_reduction: 0.2
+  list_reduction: 0.3
+  nested_list_reduction: 0.1
+  admonition_reduction: 0.2
+
+# Semantic clue weights
+semantic_weights:
+  api_docs_reduction: 0.3
+  procedural_docs_reduction: 0.2
+  reference_docs_reduction: 0.2
+  troubleshooting_reduction: 0.1
+  installation_reduction: 0.2
+  configuration_reduction: 0.2
+  technical_content_reduction: 0.15
+  procedural_content_reduction: 0.2
+  marketing_boost: 0.1
+  legal_reduction: 0.3
+  academic_reduction: 0.1
+  technical_domain_reduction: 0.2
+  api_domain_reduction: 0.3
+  expert_audience_reduction: 0.2
+  general_audience_boost: 0.1
+  clear_pattern_reduction: 0.3
+  ambiguous_pattern_boost: 0.1
+
+# Feedback clue weights
+feedback_weights:
+  accepted_pattern_reduction: 0.4
+  flagged_pattern_boost: 0.3
+  position_beginning_acceptance: 0.8
+  position_end_acceptance: 0.6
+  position_middle_acceptance: 0.4
+  high_acceptance_reduction: 0.2
+  low_acceptance_boost: 0.2
+
+# Clear restrictive patterns (unambiguous)
+clear_patterns:
+  - 'only if'
+  - 'only when'
+  - 'only supports'
+  - 'only available'
+  - 'only works'
+  - 'only allows'
+  - 'only accepts'
+  - 'read-only'
+  - 'write-only'
+  - 'only applies'
+  - 'only required'
+
+# Potentially ambiguous patterns
+ambiguous_patterns:
+  - 'can only'
+  - 'will only'
+  - 'should only'
+
+# Modal verbs for pattern detection
+modal_verbs:
+  - 'can'
+  - 'could'
+  - 'will'
+  - 'would'
+  - 'should'
+  - 'must'
+  - 'may'
+  - 'might'
+
+# Conditional words
+conditional_words:
+  - 'if'
+  - 'when'
+  - 'because'
+
+# Articles for pattern detection
+articles:
+  - 'the'
+  - 'an'
+  - 'a'
+
+# Admonition types
+admonition_types:
+  - 'NOTE'
+  - 'WARNING'
+  - 'IMPORTANT'
+  - 'CAUTION'
+  - 'TIP'
+
+# Subject dependencies (for classic pattern detection)
+subject_dependencies:
+  - 'nsubj'
+  - 'nsubjpass'
+
+# Compound dependencies (to exclude from ambiguity detection)
+compound_dependencies:
+  - 'compound'
+
+# POS tags for pattern detection
+pos_tags:
+  nouns:
+    - 'NOUN'
+    - 'PRON'
+    - 'PROPN'
+  verbs:
+    - 'VERB'
+  determiners:
+    - 'DET'
+  adjectives:
+    - 'ADJ'
+  adverbs:
+    - 'ADV'
+  numbers:
+    - 'NUM'
+  prepositions:
+    - 'ADP'
+  particles:
+    - 'PART'
+
+# Entity types that indicate clear modification
+clear_entity_types:
+  - 'PERSON'
+  - 'ORG'
+  - 'PRODUCT'
+  - 'CARDINAL'
+  - 'ORDINAL'
+
+# Verb forms for morphological analysis
+verb_forms:
+  finite: 'VerbForm=Fin'
+  infinitive: 'VerbForm=Inf'
+
+# Number morphology
+number_morphology:
+  singular: 'Number=Sing'
+  plural: 'Number=Plur'
+
+# Definiteness morphology
+definiteness_morphology:
+  definite: 'Definite=Def'
+
+# Position thresholds (as fraction of sentence length)
+position_thresholds:
+  beginning: 0.2
+  middle_start: 0.3
+  middle_end: 0.7
+  end: 0.8
+
+# Sentence complexity thresholds
+complexity_thresholds:
+  simple: 1
+  complex: 2
+
+# Dependencies that increase complexity
+complexity_dependencies:
+  - 'conj'
+  - 'cc'
+
+# Morphological weights for fine-grained analysis
+morphological_weights:
+  finite_verb_prev_boost: 0.05
+  infinitive_prev_reduction: 0.05
+  singular_noun_next_reduction: 0.05
+  plural_noun_next_reduction: 0.1
+  definite_reduction: 0.05
+  adverb_tag_reduction: 0.1
+  adjective_tag_boost: 0.2
+  action_entity_boost: 0.05
+

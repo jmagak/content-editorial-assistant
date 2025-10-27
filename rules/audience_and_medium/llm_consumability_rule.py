@@ -38,6 +38,10 @@ class LLMConsumabilityRule(BaseAudienceRule):
           - Very short topics/sentences likely to be ignored by LLMs
           - References to complex UI structures like accordions/collapsed sections
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -197,7 +201,7 @@ class LLMConsumabilityRule(BaseAudienceRule):
         # Procedural content benefits from completeness for LLMs
         if content_type in {'procedural', 'tutorial', 'how_to'}:
             ev += 0.05  # Reduced from 0.1 to be less aggressive
-        elif content_type in {'api', 'technical'}:
+        elif content_type in {'api', 'technical', 'procedure', 'procedural'}:
             # Technical content for experts can be more concise
             if audience in {'expert', 'developer'}:
                 ev -= 0.1  # Technical experts can handle brief content

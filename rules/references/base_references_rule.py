@@ -137,6 +137,10 @@ class BaseReferencesRule(BaseRule):
         Analyzes the text for reference-related violations.
         This method must be implemented by all subclasses.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         raise NotImplementedError("Subclasses must implement the analyze method.")
     
     def _apply_zero_false_positive_guards_references(self, token, context: Dict[str, Any] = None) -> bool:

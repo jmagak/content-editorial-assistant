@@ -3,6 +3,44 @@
  * Entry Points and Orchestration with world-class design
  */
 
+/**
+ * Recursively collect ALL UNIQUE errors from structural blocks
+ * This includes errors from nested blocks (paragraphs, admonitions, etc. after + markers)
+ * Deduplicates errors that appear in both parent and child blocks
+ * @param {Array} blocks - Array of structural blocks
+ * @returns {Array} - Flat array of unique errors
+ */
+function collectAllErrorsFromBlocks(blocks) {
+    if (!blocks || !Array.isArray(blocks)) return [];
+    
+    const allErrors = [];
+    const seenErrorIds = new Set();
+    
+    function collectRecursively(block) {
+        // Collect errors from this block
+        if (block.errors && Array.isArray(block.errors)) {
+            block.errors.forEach(error => {
+                // Create a unique ID for deduplication
+                // Using type + message + sentence to identify duplicates
+                const errorId = `${error.type}:${error.message}:${error.sentence || ''}`;
+                
+                if (!seenErrorIds.has(errorId)) {
+                    seenErrorIds.add(errorId);
+                    allErrors.push(error);
+                }
+            });
+        }
+        
+        // Recursively collect from children
+        if (block.children && Array.isArray(block.children)) {
+            block.children.forEach(child => collectRecursively(child));
+        }
+    }
+    
+    blocks.forEach(block => collectRecursively(block));
+    return allErrors;
+}
+
 // Main entry point - orchestrates the display using enhanced PatternFly layouts
 function displayAnalysisResults(analysis, content, structuralBlocks = null) {
     const resultsContainer = document.getElementById('analysis-results');
@@ -17,8 +55,13 @@ function displayAnalysisResults(analysis, content, structuralBlocks = null) {
         window.originalStructuralBlocks = JSON.parse(JSON.stringify(structuralBlocks)); // Deep copy
     }
 
-    // Initialize smart filter system with current errors
-    const errors = analysis.errors || [];
+    // CRITICAL FIX: Collect ALL errors including from nested blocks
+    // If we have structural blocks, collect errors from them (includes nested block errors)
+    // Otherwise, fall back to analysis.errors
+    const errors = structuralBlocks ? 
+        collectAllErrorsFromBlocks(structuralBlocks) : 
+        (analysis.errors || []);
+    
     const filteredErrors = window.SmartFilterSystem ? 
         window.SmartFilterSystem.applyFilters(errors) : errors;
     
@@ -101,17 +144,26 @@ function displayStructuralBlocks(blocks, filteredErrors = null) {
             filteredSeverities.add(severity);
         });
         
-        // Filter errors within each block using severity-based matching 
-        workingBlocks = workingBlocks.map((block) => {
+        // **FIX**: Recursively filter errors at all levels of hierarchy (including nested table content)
+        const filterErrorsRecursively = (block) => {
+            // Filter errors on this block
             if (block.errors) {
                 block.errors = block.errors.filter(error => {
-                    // Match by severity instead of object properties
                     const severity = window.SmartFilterSystem?.getSeverityLevel(error);
                     return filteredSeverities.has(severity);
                 });
             }
+            
+            // Recursively filter errors in children (tables, rows, cells, nested blocks)
+            if (block.children && Array.isArray(block.children)) {
+                block.children = block.children.map(child => filterErrorsRecursively(child));
+            }
+            
             return block;
-        });
+        };
+        
+        // Apply recursive filtering to all blocks
+        workingBlocks = workingBlocks.map(block => filterErrorsRecursively(block));
     }
     
     // Store only the blocks that actually get displayed for rewriteBlock function access
@@ -614,7 +666,10 @@ function refreshDisplayWithFilters() {
         return;
     }
     
-    const errors = currentAnalysis.errors || [];
+    // CRITICAL FIX: Collect ALL errors including from nested blocks
+    const errors = window.originalStructuralBlocks ? 
+        collectAllErrorsFromBlocks(window.originalStructuralBlocks) : 
+        (currentAnalysis.errors || []);
     
     // Use the already filtered errors from SmartFilterSystem
     let filteredErrors = errors;

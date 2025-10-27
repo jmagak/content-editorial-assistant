@@ -54,6 +54,10 @@ class PrepositionsRule(BaseLanguageRule):
         Returns:
             List of error dictionaries with evidence scores and contextual messaging
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors: List[Dict[str, Any]] = []
         if not nlp:
             return errors
@@ -166,9 +170,10 @@ class PrepositionsRule(BaseLanguageRule):
         if preposition_count <= 2:
             return 0.0
 
-        # Base evidence from count and density with conservative scaling
-        # 3 prepositions = ~0.3, 4 = ~0.4, 5+ with high density can reach 0.7-0.8
-        evidence_score = min(0.8, 0.1 * preposition_count + 0.5 * density)
+        # === REFINED BASE EVIDENCE (LOWER THRESHOLD) ===
+        # Reduced base evidence to account for technical documentation needs
+        # 3 prepositions = ~0.25, 4 = ~0.35, 5+ with high density can reach 0.6-0.7
+        evidence_score = min(0.7, 0.08 * preposition_count + 0.4 * density)
 
         # Chaining bonus: consecutive prepositions or nested attachments
         chain_factor = self._estimate_preposition_chain_factor(sentence)
@@ -197,6 +202,36 @@ class PrepositionsRule(BaseLanguageRule):
         """
         tokens = [t for t in sentence if not getattr(t, 'is_space', False)]
         token_count = len(tokens)
+        
+        # === NEGATIVE EVIDENCE CLUE: INTRODUCTORY PREPOSITIONAL PHRASES ===
+        # Prepositional phrases at sentence start establish context and are standard grammar
+        # Example: "On hosts with multiple profiles, the default profile is used."
+        # This is perfectly clear and acceptable in technical writing
+        if tokens and getattr(tokens[0], 'pos_', '') == 'ADP':
+            # Check if this is a genuine introductory phrase (often followed by comma)
+            sentence_text = sentence.text
+            
+            # Find first comma position (if any)
+            comma_pos = sentence_text.find(',')
+            
+            if comma_pos > 0:
+                # Introductory phrase before comma - standard grammatical structure
+                intro_phrase = sentence_text[:comma_pos].strip()
+                prep_count_in_intro = sum(1 for t in tokens if t.idx < tokens[0].idx + comma_pos and getattr(t, 'pos_', '') == 'ADP')
+                
+                # Strong negative evidence for introductory prepositional phrases
+                # These establish context and are necessary for precision
+                evidence_score -= 0.3
+                
+                # If multiple prepositions are in the intro (e.g., "On hosts with multiple profiles,")
+                # this is still acceptable context-setting
+                if prep_count_in_intro >= 2:
+                    evidence_score -= 0.1  # Additional reduction for complex but acceptable intro
+            else:
+                # No comma, but sentence starts with preposition
+                # Might still be acceptable introductory phrase
+                # Be more cautious but still reduce evidence
+                evidence_score -= 0.15
 
         # Long sentence length increases impact of prepositional density
         if token_count > 25:
@@ -204,12 +239,38 @@ class PrepositionsRule(BaseLanguageRule):
         if token_count > 40:
             evidence_score += 0.05
 
-        # Many objects of prepositions increase evidence
+        # === CRITICAL FIX: TECHNICAL PROPER NOUNS AS PREPOSITIONAL OBJECTS ===
+        # Technical documentation often requires precise prepositional phrases
+        # with technical terms (e.g., "in a Kubernetes Secret", "to the SNS topic")
         pobj_tokens = [t for t in tokens if getattr(t, 'dep_', '') == 'pobj']
+        
+        # Count technical proper nouns (PROPN) as prepositional objects
+        technical_pobj_count = sum(1 for t in pobj_tokens if getattr(t, 'pos_', '') == 'PROPN')
+        
+        # Strong negative clue: technical proper nouns justify prepositional complexity
+        if technical_pobj_count >= 2:
+            evidence_score -= 0.3  # Strong reduction for multiple technical terms
+        elif technical_pobj_count >= 1:
+            evidence_score -= 0.15  # Moderate reduction for single technical term
+        
+        # === NEGATIVE EVIDENCE CLUE: TECHNICAL COMPONENT SPECIFICATIONS ===
+        # Prepositional phrases that specify technical components/locations are necessary
+        # Examples: "on the disk", "in the database", "to the server", "from the device"
+        # These are precise technical specifications, not stylistic errors
+        technical_component_count = self._count_technical_component_specifications(tokens, pobj_tokens)
+        
+        if technical_component_count >= 3:
+            evidence_score -= 0.4  # Strong reduction for multiple technical components
+        elif technical_component_count >= 2:
+            evidence_score -= 0.25  # Moderate reduction for two technical components
+        elif technical_component_count >= 1:
+            evidence_score -= 0.15  # Light reduction for single technical component
+        
+        # Original logic: many objects increase evidence (but less aggressively now)
         if len(pobj_tokens) >= 3:
-            evidence_score += 0.1
+            evidence_score += 0.05  # Reduced from 0.1
         if len(pobj_tokens) >= 5:
-            evidence_score += 0.05
+            evidence_score += 0.03  # Reduced from 0.05
 
         # Multiple nominal modifiers with ADP chains indicate complexity
         nmod_like = sum(1 for t in tokens if getattr(t, 'dep_', '') in {'nmod', 'npmod'})
@@ -247,15 +308,26 @@ class PrepositionsRule(BaseLanguageRule):
         if coordination_markers >= 2:
             evidence_score -= 0.05
 
-        # Named entities often require prepositional precision
+        # === ENHANCED: NAMED ENTITIES REQUIRE PREPOSITIONAL PRECISION ===
+        # Technical documentation with named entities needs precise prepositional phrases
         entity_tokens = [t for t in tokens if getattr(t, 'ent_type_', '')]
         if entity_tokens:
             for token in entity_tokens:
                 ent_type = getattr(token, 'ent_type_', '')
                 if ent_type in ['ORG', 'PRODUCT', 'GPE']:
-                    evidence_score -= 0.02  # Organizations, products, places need precision
+                    evidence_score -= 0.05  # Increased from 0.02 - organizations, products, places need precision
                 elif ent_type in ['PERSON', 'MONEY', 'DATE']:
-                    evidence_score -= 0.01  # Other entities may need prepositional clarity
+                    evidence_score -= 0.03  # Increased from 0.01 - other entities may need prepositional clarity
+
+        # === CRITICAL FIX: INLINE CODE PROTECTION ===
+        # Inline code blocks (backticks) often appear in technical prepositional phrases
+        # and should not be penalized (e.g., "stored in `my-secret`")
+        sentence_text = sentence.text
+        if '`' in sentence_text:
+            # Count inline code blocks
+            inline_code_count = sentence_text.count('`') // 2
+            if inline_code_count >= 1:
+                evidence_score -= 0.2 * inline_code_count  # Strong reduction for inline code
 
         return evidence_score
 
@@ -321,6 +393,18 @@ class PrepositionsRule(BaseLanguageRule):
         elif block_type in {'sidebar', 'callout'}:
             evidence_score -= 0.1
 
+        # === CRITICAL FIX: PREREQUISITES CONTEXT ===
+        # Prerequisite sections describe required pre-existing states using
+        # present perfect tense and prepositional phrases (e.g., "stored in...")
+        # This is grammatically correct and cannot be simplified
+        preceding_heading = context.get('preceding_heading', '').lower()
+        current_heading = context.get('current_heading', '').lower()
+        
+        if 'prerequisite' in preceding_heading or 'prerequisite' in current_heading:
+            evidence_score -= 0.3  # Strong reduction for prerequisite context
+        elif 'requirement' in preceding_heading or 'requirement' in current_heading:
+            evidence_score -= 0.2  # Moderate reduction for requirements
+
         return evidence_score
 
     def _apply_semantic_clues_prepositions(self, evidence_score: float, text: str, context: Dict[str, Any]) -> float:
@@ -348,7 +432,7 @@ class PrepositionsRule(BaseLanguageRule):
         audience = context.get('audience', 'general')
 
         # Content type adjustments
-        if content_type in {'technical', 'api'}:
+        if content_type in {'technical', 'api', 'procedure', 'procedural'}:
             evidence_score -= 0.05  # Technical writing often needs prepositional precision
         elif content_type in {'tutorial', 'how-to'}:
             evidence_score -= 0.03  # Step-by-step instructions use prepositions
@@ -555,6 +639,82 @@ class PrepositionsRule(BaseLanguageRule):
                                 chains += 1
                                 break
         return chains
+    
+    def _count_technical_component_specifications(self, tokens: List, pobj_tokens: List) -> int:
+        """
+        Count prepositional phrases that specify technical components or locations.
+        
+        Technical documentation requires precise prepositional phrases to specify:
+        - Hardware components: "on the disk", "in the drive", "from the device"
+        - Software components: "in the database", "to the server", "from the cache"
+        - System locations: "on the host", "in the cluster", "to the network"
+        - Data locations: "in the file", "to the queue", "from the stream"
+        
+        These are necessary for technical precision, not stylistic errors.
+        
+        Args:
+            tokens: List of tokens in the sentence
+            pobj_tokens: List of prepositional object tokens
+            
+        Returns:
+            int: Count of technical component specifications
+        """
+        # Technical components and locations that require prepositional precision
+        technical_components = {
+            # Hardware
+            'disk', 'drive', 'device', 'cpu', 'memory', 'processor', 'chip', 
+            'board', 'card', 'hardware', 'machine', 'equipment',
+            
+            # Software/System
+            'database', 'server', 'service', 'application', 'system', 'platform',
+            'instance', 'container', 'pod', 'node', 'cluster', 'host', 'vm',
+            'environment', 'workspace', 'namespace', 'network', 'subnet',
+            
+            # Data/Storage
+            'file', 'directory', 'folder', 'path', 'volume', 'storage', 'bucket',
+            'cache', 'buffer', 'queue', 'stream', 'channel', 'pipe', 'socket',
+            'log', 'record', 'entry', 'table', 'collection', 'index',
+            
+            # Cloud/Infrastructure
+            'cloud', 'region', 'zone', 'datacenter', 'infrastructure',
+            'resource', 'endpoint', 'interface', 'port', 'address',
+            
+            # Configuration
+            'config', 'configuration', 'setting', 'parameter', 'option', 'property',
+            'variable', 'value', 'field', 'attribute', 'key',
+            
+            # Process/Runtime
+            'process', 'thread', 'job', 'task', 'worker', 'daemon', 'runtime',
+            'session', 'connection', 'transaction', 'request', 'response'
+        }
+        
+        count = 0
+        for pobj in pobj_tokens:
+            # Check if the prepositional object is a technical component
+            pobj_lemma = getattr(pobj, 'lemma_', '').lower()
+            pobj_text = getattr(pobj, 'text', '').lower()
+            
+            if pobj_lemma in technical_components or pobj_text in technical_components:
+                count += 1
+                continue
+            
+            # Check for compound technical terms (e.g., "server instance", "disk drive")
+            # Look at children and head of pobj
+            for child in getattr(pobj, 'children', []):
+                child_lemma = getattr(child, 'lemma_', '').lower()
+                child_text = getattr(child, 'text', '').lower()
+                if child_lemma in technical_components or child_text in technical_components:
+                    count += 1
+                    break
+            
+            # Check if pobj has technical modifiers (e.g., "production server", "local disk")
+            pobj_head = getattr(pobj, 'head', None)
+            if pobj_head:
+                head_lemma = getattr(pobj_head, 'lemma_', '').lower()
+                if head_lemma in technical_components:
+                    count += 1
+        
+        return count
 
     def _density_in_range(self, density: float, range_spec: str) -> bool:
         """
@@ -633,7 +793,7 @@ class PrepositionsRule(BaseLanguageRule):
         audience = context.get('audience', 'general')
         
         if evidence_score > 0.8:
-            if content_type in {'technical', 'api'}:
+            if content_type in {'technical', 'api', 'procedure', 'procedural'}:
                 return f"High prepositional density ({preposition_count}) may reduce technical clarity. Consider restructuring for better comprehension."
             elif audience in {'beginner', 'general'}:
                 return f"Sentence has many prepositional phrases ({preposition_count}) that may confuse readers. Consider simplifying."
@@ -677,7 +837,7 @@ class PrepositionsRule(BaseLanguageRule):
 
         # High evidence cases need restructuring
         if evidence_score > 0.7:
-            if content_type in {'technical', 'api'}:
+            if content_type in {'technical', 'api', 'procedure', 'procedural'}:
                 suggestions.append("Split into two sentences focusing on the main technical concept first, then supporting details.")
             elif audience in {'beginner', 'general'}:
                 suggestions.append("Break this into simpler sentences that introduce one concept at a time.")

@@ -3,6 +3,7 @@
 # ================================
 Flask>=3.0.0,<4.0.0
 Flask-Cors>=4.0.0,<5.0.0
+Flask-Limiter>=3.5.0,<4.0.0
 Flask-Login>=0.6.0,<1.0.0
 Flask-Migrate>=4.0.0,<5.0.0
 Flask-SocketIO>=5.0.0,<6.0.0
@@ -26,7 +27,7 @@ Mako>=1.3.0,<2.0.0
 # ================================
 # AI SERVICES (Simple & Lightweight)
 # ================================
-ollama>=0.3.0,<1.0.0
+# ollama>=0.3.0,<1.0.0  # Not needed - we use requests for Ollama HTTP API calls
 requests>=2.30.0,<3.0.0
 urllib3>=2.0.0,<3.0.0
 
@@ -42,7 +43,12 @@ nltk>=3.8.0,<4.0.0
 textstat>=0.7.0,<1.0.0
 regex>=2023.0.0,<2025.0.0
 
-# Semantic similarity for metadata classification
+# Semantic similarity for metadata classification (CPU-only)
+# NOTE: For OpenShift deployment, install PyTorch CPU-only version first:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Then install the rest of requirements.txt
+torch>=2.0.0,<3.0.0
+torchvision>=0.15.0,<1.0.0
 sentence-transformers>=2.2.0,<3.0.0
 scikit-learn>=1.3.0,<2.0.0
 
@@ -87,6 +93,12 @@ reportlab>=4.0.0,<5.0.0
 matplotlib>=3.7.0,<4.0.0
 seaborn>=0.12.0,<1.0.0
 pandas>=2.0.0,<3.0.0
+
+# ================================
+# PRODUCTION SERVER
+# ================================
+gunicorn>=23.0.0,<24.0.0
+gevent>=24.2.0,<25.0.0
 
 # ================================
 # WEBSOCKETS & REAL-TIME

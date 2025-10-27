@@ -1133,3 +1133,162 @@
         grid-template-columns: 1fr;
     }
 }
+
+/* Dark mode support for blog creation page */
+@media (prefers-color-scheme: dark) {
+    /* Blog form sections */
+    .blog-form-section {
+        background: #374151;
+        border-color: #4B5563;
+        box-shadow: 
+            0 4px 24px rgba(0, 0, 0, 0.2),
+            0 2px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    .blog-form-section:hover {
+        box-shadow: 
+            0 8px 40px rgba(0, 0, 0, 0.3),
+            0 4px 20px rgba(0, 0, 0, 0.15);
+    }
+
+    .section-header {
+        border-bottom-color: #4B5563;
+    }
+
+    .section-title {
+        color: #F9FAFB;
+    }
+
+    .section-title i {
+        color: #60A5FA;
+    }
+
+    .section-description {
+        color: #D1D5DB;
+    }
+
+    /* Form controls */
+    .form-label {
+        color: #E5E7EB;
+    }
+
+    .form-control,
+    .form-textarea {
+        background: #1F2937;
+        color: #F9FAFB;
+        border-color: #6B7280;
+    }
+
+    .form-control:focus,
+    .form-textarea:focus {
+        background: #1F2937;
+        border-color: #60A5FA;
+        box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
+    }
+
+    .form-control::placeholder,
+    .form-textarea::placeholder {
+        color: #6B7280;
+    }
+
+    /* Radio buttons */
+    .radio-option {
+        background: #1F2937;
+        border-color: #6B7280;
+    }
+
+    .radio-option:hover {
+        border-color: #60A5FA;
+        background: rgba(96, 165, 250, 0.05);
+    }
+
+    .radio-option.checked {
+        border-color: #60A5FA;
+        background: rgba(96, 165, 250, 0.1);
+    }
+
+    .radio-content {
+        color: #E5E7EB;
+    }
+
+    .radio-indicator {
+        background: #374151;
+        border-color: #6B7280;
+    }
+
+    .radio-option.checked .radio-indicator {
+        background: #60A5FA;
+        border-color: #60A5FA;
+    }
+
+    /* Checkboxes */
+    .checkbox-option {
+        background: #1F2937;
+        border-color: #6B7280;
+        color: #E5E7EB;
+    }
+
+    .checkbox-option:hover {
+        border-color: #60A5FA;
+        background: rgba(96, 165, 250, 0.05);
+    }
+
+    .checkbox-option.checked {
+        border-color: #60A5FA;
+        background: rgba(96, 165, 250, 0.1);
+    }
+
+    .checkbox-indicator {
+        background: #374151;
+        border-color: #6B7280;
+    }
+
+    .checkbox-option.checked .checkbox-indicator {
+        background: #60A5FA;
+        border-color: #60A5FA;
+    }
+
+    /* URL inputs */
+    .url-input {
+        background: #1F2937;
+        color: #F9FAFB;
+        border-color: #6B7280;
+    }
+
+    .btn-add-url {
+        background: #4B5563;
+        border-color: #6B7280;
+        color: #E5E7EB;
+    }
+
+    .btn-add-url:hover {
+        background: #60A5FA;
+        border-color: #60A5FA;
+        color: #F9FAFB;
+    }
+
+    .btn-remove-url {
+        background: #DC2626;
+        border-color: #DC2626;
+    }
+
+    .btn-remove-url:hover {
+        background: #B91C1C;
+        border-color: #B91C1C;
+    }
+
+    /* Form actions */
+    .form-actions {
+        border-top-color: #4B5563;
+    }
+
+    .btn-secondary {
+        background: #4B5563;
+        border-color: #6B7280;
+        color: #E5E7EB;
+    }
+
+    .btn-secondary:hover {
+        background: #6B7280;
+    }
+}

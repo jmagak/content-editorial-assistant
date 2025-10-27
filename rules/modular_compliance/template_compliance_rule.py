@@ -29,6 +29,28 @@ class TemplateComplianceRule(BaseRule):
     def _get_rule_type(self) -> str:
         """Return the rule type for BaseRule compatibility."""
         return "template_compliance"
+    
+    def _detect_content_type_from_metadata(self, text: str) -> Optional[str]:
+        """
+        Detect content type from document metadata attributes.
+        
+        Looks for:
+        - :_mod-docs-content-type: PROCEDURE|CONCEPT|REFERENCE
+        - :_content-type: (deprecated but still supported)
+        
+        Returns lowercase type or None if not found.
+        """
+        # Check for new-style attribute
+        new_style = re.search(r':_mod-docs-content-type:\s*(PROCEDURE|CONCEPT|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if new_style:
+            return new_style.group(1).lower()
+        
+        # Check for old-style attribute (deprecated but still supported)
+        old_style = re.search(r':_content-type:\s*(PROCEDURE|CONCEPT|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if old_style:
+            return old_style.group(1).lower()
+        
+        return None
         
     def _load_templates(self):
         """Load modular documentation templates."""
@@ -165,7 +187,7 @@ class TemplateComplianceRule(BaseRule):
             except Exception:
                 pass  # Use defaults
     
-    def analyze(self, text: str, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    def analyze(self, text: str, sentences: List[str] = None, nlp=None, context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Analyze document structure against modular documentation templates.
         
@@ -176,12 +198,22 @@ class TemplateComplianceRule(BaseRule):
         Returns:
             List of template compliance issues and suggestions
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         if not text or not text.strip():
             return []
         
         errors = []
         context = context or {}
-        module_type = context.get('content_type', 'concept')
+        
+        # First try to detect content type from document metadata
+        detected_type = self._detect_content_type_from_metadata(text)
+        module_type = context.get('content_type', detected_type or 'concept')
+        
+        # Store the detected type back into context for use by validation methods
+        context['content_type'] = module_type
         
         try:
             # Parse document structure
@@ -263,8 +295,16 @@ class TemplateComplianceRule(BaseRule):
                 continue
                 
             pattern = re.compile(required['pattern'], re.IGNORECASE)
+            
+            # Check section headings (== style)
             found = any(pattern.match(f"={'=' * section['level']} {section['title']}") 
                        for section in sections)
+            
+            # Also check for discrete headings (. style) in raw text
+            # Red Hat modular docs use .Prerequisites, .Procedure, etc.
+            if not found:
+                discrete_pattern = required['pattern'].replace('^== ', '^\\.').replace('^=+', '\\.')
+                found = bool(re.search(discrete_pattern, text, re.MULTILINE | re.IGNORECASE))
             
             if not found:
                 module_type = context.get('content_type', 'concept')
@@ -351,7 +391,12 @@ class TemplateComplianceRule(BaseRule):
         return errors
     
     def _suggest_template_improvements(self, structure: Dict[str, Any], template: Dict[str, Any], text: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Suggest improvements based on template best practices."""
+        """
+        Suggest improvements based on template best practices.
+        
+        Per Red Hat guidelines, optional sections should only be suggested when
+        there's content that warrants them, not suggested unconditionally.
+        """
         errors = []
         
         if not self.config['suggest_improvements']:
@@ -359,27 +404,12 @@ class TemplateComplianceRule(BaseRule):
         
         module_type = context.get('content_type', 'concept')
         
-        # Suggest optional but recommended sections
-        optional_sections = template.get('optional_sections', []) + template.get('typical_sections', [])
-        sections = structure.get('sections', [])
+        # Don't suggest optional sections - they are truly OPTIONAL per Red Hat guidelines
+        # The document is compliant as long as required sections are present
+        # Optional sections like Troubleshooting, Next steps are only added when needed
         
-        for optional in optional_sections[:2]:  # Limit suggestions
-            pattern = re.compile(optional['pattern'], re.IGNORECASE)
-            found = any(pattern.match(f"={'=' * section['level']} {section['title']}") 
-                       for section in sections)
-            
-            if not found:
-                errors.append(self._create_error(
-                    optional['pattern'],  # sentence
-                    0,  # sentence_index
-                    f"Consider adding recommended section for {module_type} module",  # message
-                    [f"Consider adding: {self._suggest_section_title(optional['pattern'])}"],  # suggestions
-                    severity="low",
-                    text=text,
-                    context=context,
-                    confidence=self.config['confidence_thresholds']['structure_suggestion'],
-                    error_type="suggested_section"
-                ))
+        # According to Red Hat modular docs guide:
+        # "optional_sections" means they CAN be included, not that they SHOULD be suggested
         
         return errors
     

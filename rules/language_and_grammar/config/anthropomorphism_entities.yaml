@@ -82,10 +82,18 @@ anthropomorphic_verbs:
     - serve
 
 # Technical verbs that are acceptable for systems/software
+# These verbs are standard in technical writing and should NOT be flagged
 technical_verbs:
   acceptable_system_verbs:
     - detect
     - identify
+    - enable
+    - disable
+    - permit
+    - provide
+    - execute
+    - process  
+    - perform
     - recognize
     - analyze
     - process

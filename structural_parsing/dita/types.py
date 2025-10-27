@@ -132,6 +132,11 @@ class DITABlock:
         if not content:
             return ""
         
+        # **CRITICAL FIX**: Decode HTML entities FIRST before any other processing
+        # This prevents issues where &#8217; (apostrophe) is seen as "8217" by rules
+        import html
+        content = html.unescape(content)
+        
         # Remove any remaining XML tags
         content = re.sub(r'<[^>]+>', '', content)
         

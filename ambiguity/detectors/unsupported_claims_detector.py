@@ -144,6 +144,10 @@ class UnsupportedClaimsDetector(AmbiguityDetector):
         if any(word in context.sentence.lower() for word in ['disclaimer', 'warranty', 'liability']):
             return True
         
+        # GUARD 5: Technical Commands in Procedural Prose
+        if self._is_technical_command_context(context):
+            return True
+        
         return False
     
     def _calculate_claims_evidence(self, token, doc, context: AmbiguityContext, claim_type: str) -> float:
@@ -358,6 +362,143 @@ class UnsupportedClaimsDetector(AmbiguityDetector):
                 return True
         
         return False
+    
+    def _is_technical_command_context(self, context: AmbiguityContext) -> bool:
+        """
+        Detect if the sentence contains technical commands that might use promise-indicator words.
+        
+        This guard prevents false positives when promise words like "commit", "promise", "assure"
+        are actually technical commands or verbs, not promises/claims.
+        
+        Examples:
+            - "Commit and push the changes" - Git command, not a promise
+            - "Select and import the template" - UI action, not a promise
+            - "we commit to providing support" - Actual promise (NOT protected)
+        
+        Args:
+            context: Ambiguity context with sentence and document context
+            
+        Returns:
+            bool: True if this is a technical command context (should skip detection)
+        """
+        sentence_lower = context.sentence.lower()
+        document_context = context.document_context or {}
+        
+        # === Indicator 1: Procedural/Instructional Block Types ===
+        # Commands appear in procedural content
+        block_type = document_context.get('block_type', '')
+        content_type = document_context.get('content_type', '')
+        
+        if block_type in ['ordered_list_item', 'unordered_list_item', 'list_item']:
+            # In list items, check for command patterns
+            if self._has_command_verb_patterns(sentence_lower):
+                return True
+        
+        if content_type in ['procedural', 'tutorial', 'howto', 'guide']:
+            if self._has_command_verb_patterns(sentence_lower):
+                return True
+        
+        # === Indicator 2: Git/Version Control Commands ===
+        # Specific patterns for Git commands
+        git_command_patterns = [
+            'commit and push', 'commit the changes', 'commit your changes',
+            'push the changes', 'push to the repository', 'pull the changes',
+            'clone the repository', 'fork the repository', 'merge the branch'
+        ]
+        
+        if any(pattern in sentence_lower for pattern in git_command_patterns):
+            return True
+        
+        # === Indicator 3: Imperative Mood with Technical Markers ===
+        # Check for imperative verbs at sentence start with technical context
+        if sentence_lower.strip():
+            first_word = sentence_lower.split()[0]
+            
+            # Promise indicators that can be commands
+            command_promise_words = {'commit', 'push', 'pull', 'select', 'import', 'export'}
+            
+            if first_word in command_promise_words:
+                # Check for technical markers in the sentence
+                technical_markers = [
+                    'repository', 'template', 'file', 'directory', 'changes',
+                    'code', 'branch', 'remote', 'local', 'configuration',
+                    '.yaml', '.json', '.xml', '.sh', '.py', '.js',
+                    'github', 'gitlab', 'git', 'url'
+                ]
+                
+                if any(marker in sentence_lower for marker in technical_markers):
+                    return True
+        
+        # === Indicator 4: Coordinated Command Verbs ===
+        # "Commit and push" pattern - commands coordinated with "and"
+        coordinated_commands = [
+            'commit and', 'push and', 'select and', 'import and',
+            'export and', 'save and', 'delete and', 'run and'
+        ]
+        
+        if any(pattern in sentence_lower for pattern in coordinated_commands):
+            return True
+        
+        # === Indicator 5: Object is Technical Entity ===
+        # "commit the code", "push the repository" - object is technical
+        promise_words_as_commands = ['commit', 'promise', 'assure', 'guarantee']
+        
+        for word in promise_words_as_commands:
+            if word in sentence_lower:
+                # Check if followed by technical objects
+                technical_objects = [
+                    f'{word} the changes', f'{word} your changes',
+                    f'{word} the code', f'{word} the file',
+                    f'{word} the repository', f'{word} the template',
+                    f'{word} your code', f'{word} your files'
+                ]
+                
+                if any(obj_pattern in sentence_lower for obj_pattern in technical_objects):
+                    return True
+        
+        # === Indicator 6: File Path or Technical Syntax ===
+        # Sentences with file paths are likely technical
+        if ('/' in sentence_lower or '\\' in sentence_lower or
+            '.' in sentence_lower and any(ext in sentence_lower for ext in ['.yaml', '.json', '.xml', '.sh', '.py'])):
+            # Check if sentence also contains a promise word being used as command
+            if any(word in sentence_lower for word in ['commit', 'push', 'select', 'import']):
+                return True
+        
+        return False
+    
+    def _has_command_verb_patterns(self, sentence_lower: str) -> bool:
+        """
+        Check if sentence has command verb patterns indicative of technical instructions.
+        
+        Args:
+            sentence_lower: Lowercase sentence text
+            
+        Returns:
+            bool: True if sentence contains command verb patterns
+        """
+        # Command verb indicators
+        command_verbs = [
+            'run', 'execute', 'install', 'configure', 'deploy', 'build',
+            'start', 'stop', 'restart', 'enable', 'disable', 'update',
+            'select', 'click', 'choose', 'open', 'close', 'save',
+            'commit', 'push', 'pull', 'clone', 'merge', 'fork',
+            'create', 'delete', 'modify', 'edit', 'change', 'add', 'remove'
+        ]
+        
+        # Check for command verbs at sentence start (imperative mood)
+        if sentence_lower.strip():
+            first_word = sentence_lower.split()[0]
+            if first_word in command_verbs:
+                return True
+        
+        # Check for command verb patterns with objects
+        command_patterns = [
+            'run the', 'execute the', 'install the', 'configure the',
+            'select the', 'click the', 'open the', 'commit the',
+            'push the', 'create the', 'delete the'
+        ]
+        
+        return any(pattern in sentence_lower for pattern in command_patterns)
     
     # Legacy compatibility methods (refactored for evidence-based approach)
     def _is_excepted(self, text: str) -> bool:

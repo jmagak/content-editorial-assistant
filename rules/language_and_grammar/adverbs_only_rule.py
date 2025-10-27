@@ -1,9 +1,10 @@
 """
 Adverbs - only Rule
-Based on IBM Style Guide topic: "Adverbs - only"
+Based on IBM Style Guide: Checks ambiguous placement of "only".
 """
 from typing import List, Dict, Any
 from .base_language_rule import BaseLanguageRule
+from .services.language_vocabulary_service import get_adverbs_only_vocabulary
 
 try:
     from spacy.tokens import Doc
@@ -11,19 +12,21 @@ except ImportError:
     Doc = None
 
 class AdverbsOnlyRule(BaseLanguageRule):
-    """
-    Checks for the word "only" and advises the user to review its placement
-    to ensure the meaning of the sentence is clear and unambiguous.
-    """
+    """Checks for ambiguous placement of "only" using evidence-based scoring."""
+    
+    def __init__(self):
+        super().__init__()
+        self.vocab_service = get_adverbs_only_vocabulary()
+        self.config = self.vocab_service.get_adverbs_only_config()
+    
     def _get_rule_type(self) -> str:
-        """Returns the unique identifier for this rule."""
         return 'adverbs_only'
 
     def analyze(self, text: str, sentences: List[str], nlp=None, context=None) -> List[Dict[str, Any]]:
-        """
-        Analyzes sentences for potentially ambiguous placement of "only" using evidence-based scoring.
-        Uses sophisticated linguistic analysis to distinguish clear usage from ambiguous placement.
-        """
+        """Analyze sentences for ambiguous placement of "only"."""
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
+        
         errors = []
         if not nlp:
             return errors
@@ -32,13 +35,9 @@ class AdverbsOnlyRule(BaseLanguageRule):
         for i, sent in enumerate(doc.sents):
             for token in sent:
                 if token.lemma_ == 'only':
-                    # Calculate evidence score for potential ambiguity
-                    evidence_score = self._calculate_only_ambiguity_evidence(
-                        token, sent, text, context
-                    )
+                    evidence_score = self._calculate_only_ambiguity_evidence(token, sent, text, context)
                     
-                    # Only create error if evidence suggests potential ambiguity
-                    if evidence_score > 0.1:  # Low threshold - let enhanced validation decide
+                    if evidence_score > self.config['evidence_thresholds']['min_threshold']:
                         errors.append(self._create_error(
                             sentence=sent.text,
                             sentence_index=i,
@@ -47,398 +46,271 @@ class AdverbsOnlyRule(BaseLanguageRule):
                             severity='low',
                             text=text,
                             context=context,
-                            evidence_score=evidence_score,  # Your nuanced assessment
+                            evidence_score=evidence_score,
                             span=(token.idx, token.idx + len(token.text)),
                             flagged_text=token.text
                         ))
         return errors
 
-    # === EVIDENCE-BASED CALCULATION METHODS ===
-
     def _calculate_only_ambiguity_evidence(self, token, sentence, text: str, context: dict) -> float:
-        """
-        Calculate evidence score (0.0-1.0) for potential "only" placement ambiguity.
+        """Calculate evidence score for "only" placement ambiguity."""
+        if token.lemma_ != 'only':
+            return 0.0
         
-        Higher scores indicate stronger evidence of potential ambiguity.
-        Lower scores indicate clear, unambiguous placement.
+        # === SURGICAL GUARD: Clear restrictive patterns ===
+        # Patterns like "only if", "only when" are UNAMBIGUOUS and should not be flagged
+        next_token = token.nbor(1) if token.i < len(token.doc) - 1 else None
+        if next_token and next_token.lemma_ in self.config['conditional_words']:
+            return 0.0  # EXIT EARLY: This is a clear, unambiguous pattern
         
-        Args:
-            token: The "only" token
-            sentence: Sentence containing the token
-            text: Full document text
-            context: Document context (block_type, content_type, etc.)
-            
-        Returns:
-            float: Evidence score from 0.0 (no ambiguity) to 1.0 (highly ambiguous)
-        """
-        evidence_score = 0.0
-        
-        # === STEP 1: BASE EVIDENCE ASSESSMENT ===
-        if token.lemma_ == 'only':
-            evidence_score = 0.5  # Start with moderate evidence for any "only"
-        else:
-            return 0.0  # No evidence, skip this token
-        
-        # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
+        evidence_score = self.config['evidence_thresholds']['base_score']
         evidence_score = self._apply_linguistic_clues_only(evidence_score, token, sentence)
-        
-        # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._apply_structural_clues_only(evidence_score, token, context)
-        
-        # === STEP 4: SEMANTIC CLUES (MACRO-LEVEL) ===
         evidence_score = self._apply_semantic_clues_only(evidence_score, token, text, context)
-        
-        # === STEP 5: FEEDBACK PATTERNS (LEARNING CLUES) ===
         evidence_score = self._apply_feedback_clues_only(evidence_score, token, context)
         
-        return max(0.0, min(1.0, evidence_score))  # Clamp to valid range
-
-    # === LINGUISTIC CLUES (MICRO-LEVEL) ===
+        return max(0.0, min(1.0, evidence_score))
 
     def _apply_linguistic_clues_only(self, evidence_score: float, token, sentence) -> float:
-        """Apply SpaCy-based linguistic analysis clues for "only" placement ambiguity."""
+        """Apply linguistic analysis for "only" placement."""
+        w = self.config['linguistic_weights']
         
-        # === CRITICAL PATTERN DETECTION: [Noun] [only] [Verb] ===
-        # This is a CLASSIC ambiguity pattern that must be caught
-        classic_ambiguity_detected = self._detect_classic_noun_only_verb_pattern(token, sentence)
-        if classic_ambiguity_detected:
-            evidence_score += 0.8  # STRONG evidence for classic ambiguous pattern
+        if self._detect_classic_noun_only_verb_pattern(token, sentence):
+            evidence_score += w['classic_ambiguity_boost']
         
-        # === CLEAR PATTERN DETECTION: "only [Det] [Noun]" ===  
-        # This pattern is unambiguous - "only" clearly modifies the noun phrase
-        clear_modification_detected = self._detect_clear_only_modification_pattern(token, sentence)
-        if clear_modification_detected:
-            evidence_score -= 0.6  # STRONG counter-evidence for clear modification
+        if self._detect_clear_only_modification_pattern(token, sentence):
+            evidence_score -= w['clear_modification_reduction']
         
-        # === POSITIONAL ANALYSIS ===
-        # Get position within sentence
         sent_tokens = list(sentence)
-        token_position = None
-        for i, sent_token in enumerate(sent_tokens):
-            if sent_token.i == token.i:
-                token_position = i
-                break
+        token_position = next((i for i, t in enumerate(sent_tokens) if t.i == token.i), None)
         
         if token_position is not None:
             sentence_length = len(sent_tokens)
             relative_position = token_position / sentence_length if sentence_length > 0 else 0
             
-            # "Only" at sentence beginning is often clear (restrictive meaning)
-            if relative_position < 0.2:  # First 20% of sentence
-                evidence_score -= 0.2  # "Only developers can access..." (reduced from 0.3)
-            
-            # "Only" in middle of sentence more likely ambiguous  
-            elif 0.3 < relative_position < 0.7:  # Middle 40% of sentence
-                evidence_score += 0.3  # "Developers only can access..." - ambiguous (increased from 0.2)
-            
-            # "Only" near end - check if it clearly modifies following phrase
-            elif relative_position > 0.8:  # Last 20% of sentence
-                # Check if "only" clearly modifies what follows it
+            if relative_position < self.config['position_thresholds']['beginning']:
+                evidence_score -= w['position_beginning_reduction']
+            elif (self.config['position_thresholds']['middle_start'] < relative_position < 
+                  self.config['position_thresholds']['middle_end']):
+                evidence_score += w['position_middle_boost']
+            elif relative_position > self.config['position_thresholds']['end']:
                 next_token = token.nbor(1) if token.i < len(token.doc) - 1 else None
-                if next_token and next_token.pos_ in ['DET', 'NOUN', 'PROPN']:
-                    evidence_score -= 0.1  # "edit only this file" - clear modification
+                if next_token and next_token.pos_ in self.config['pos_tags']['nouns'] + self.config['pos_tags']['determiners']:
+                    evidence_score -= w['position_end_det_noun_reduction']
                 else:
-                    evidence_score += 0.1  # "Developers can access only" - might be unclear
+                    evidence_score += w['position_end_other_boost']
         
-        # === DEPENDENCY ANALYSIS ===
-        # Check what "only" modifies
-        only_children = list(token.children)
         only_head = token.head
-        
-        # "Only" modifying a noun phrase (clearer)
-        if token.dep_ == 'advmod' and only_head.pos_ in ['NOUN', 'PRON']:
-            evidence_score -= 0.2  # "only administrators", "only this feature"
-        
-        # "Only" modifying a verb (potentially ambiguous)
-        elif token.dep_ == 'advmod' and only_head.pos_ == 'VERB':
-            evidence_score += 0.1  # "only supports" vs "supports only"
-        
-        # "Only" with unclear dependency relationship
+        if token.dep_ == 'advmod' and only_head.pos_ in self.config['pos_tags']['nouns']:
+            evidence_score -= w['advmod_noun_reduction']
+        elif token.dep_ == 'advmod' and only_head.pos_ in self.config['pos_tags']['verbs']:
+            evidence_score += w['advmod_verb_boost']
         elif token.dep_ in ['ROOT', 'nsubj']:
-            evidence_score += 0.3  # Grammatically unclear
+            evidence_score += w['unclear_dependency_boost']
         
-        # === ADJACENT WORD ANALYSIS ===
         prev_token = token.nbor(-1) if token.i > 0 else None
         next_token = token.nbor(1) if token.i < len(token.doc) - 1 else None
         
-        # Clear patterns with "only"
         if prev_token:
-            if prev_token.lemma_ in ['the', 'an', 'a']:
-                evidence_score -= 0.2  # "the only way" - clear
-            elif prev_token.pos_ == 'VERB':
-                evidence_score += 0.1  # "supports only" - could be clearer
+            if prev_token.lemma_ in self.config['articles']:
+                evidence_score -= w['article_prev_reduction']
+            elif prev_token.pos_ in self.config['pos_tags']['verbs']:
+                evidence_score += w['verb_prev_boost']
             
-            # Enhanced morphological analysis of previous token
             if hasattr(prev_token, 'morph') and prev_token.morph:
                 morph_str = str(prev_token.morph)
-                if 'VerbForm=Fin' in morph_str:  # Finite verb
-                    evidence_score += 0.05  # "processes only" - could be clearer
-                elif 'VerbForm=Inf' in morph_str:  # Infinitive
-                    evidence_score -= 0.05  # "to only process" - clearer
+                if self.config['verb_forms']['finite'] in morph_str:
+                    evidence_score += w.get('finite_verb_prev_boost', 0.05)
+                elif self.config['verb_forms']['infinitive'] in morph_str:
+                    evidence_score -= w.get('infinitive_prev_reduction', 0.05)
         
         if next_token:
-            if next_token.pos_ in ['NOUN', 'PRON', 'PROPN']:
-                evidence_score -= 0.2  # "only users", "only John" - clear
-            elif next_token.pos_ == 'DET':  # "only the/this/that"
-                evidence_score -= 0.25  # "only this file" - very clear modification
-            elif next_token.lemma_ in ['if', 'when', 'because']:
-                evidence_score -= 0.1  # "only if condition" - clear conditional
-            elif next_token.pos_ == 'VERB':
-                evidence_score += 0.2  # "only run" vs "run only" - ambiguous
+            if next_token.pos_ in self.config['pos_tags']['nouns']:
+                evidence_score -= w['noun_next_reduction']
+            elif next_token.pos_ in self.config['pos_tags']['determiners']:
+                evidence_score -= w['det_next_reduction']
+            elif next_token.pos_ in self.config['pos_tags']['prepositions'] + self.config['pos_tags']['particles']:
+                evidence_score -= w['prep_next_reduction']
+            elif next_token.lemma_ in self.config['conditional_words']:
+                evidence_score -= w['conditional_next_reduction']
+            elif next_token.pos_ in self.config['pos_tags']['verbs']:
+                evidence_score += w['verb_next_boost']
             
-            # Enhanced morphological analysis of next token
             if hasattr(next_token, 'morph') and next_token.morph:
                 morph_str = str(next_token.morph)
-                if 'Number=Sing' in morph_str and next_token.pos_ == 'NOUN':
-                    evidence_score -= 0.05  # "only user" - clear singular
-                elif 'Number=Plur' in morph_str and next_token.pos_ == 'NOUN':
-                    evidence_score -= 0.1  # "only users" - clear plural
-                
-                # Check for definite/indefinite articles effect
-                if 'Definite=Def' in morph_str:
-                    evidence_score -= 0.05  # Definite forms clearer
+                if self.config['number_morphology']['singular'] in morph_str and next_token.pos_ == 'NOUN':
+                    evidence_score -= w.get('singular_noun_next_reduction', 0.05)
+                elif self.config['number_morphology']['plural'] in morph_str and next_token.pos_ == 'NOUN':
+                    evidence_score -= w.get('plural_noun_next_reduction', 0.1)
+                if self.config['definiteness_morphology']['definite'] in morph_str:
+                    evidence_score -= w.get('definite_reduction', 0.05)
+            
+            if hasattr(next_token, 'ent_type_') and next_token.ent_type_:
+                if next_token.ent_type_ in self.config['clear_entity_types']:
+                    evidence_score -= w['entity_reduction']
         
-        # === ENHANCED POS TAG ANALYSIS ===
-        # More detailed part-of-speech analysis
         if hasattr(token, 'tag_'):
-            if token.tag_ == 'RB':  # Adverb
-                evidence_score -= 0.1  # Standard adverbial use
-            elif token.tag_ == 'JJ':  # Adjective (rare but possible)
-                evidence_score += 0.2  # Unusual usage, potentially ambiguous
+            if token.tag_ == 'RB':
+                evidence_score -= w.get('adverb_tag_reduction', 0.1)
+            elif token.tag_ == 'JJ':
+                evidence_score += w.get('adjective_tag_boost', 0.2)
         
-        # === ENHANCED ENTITY TYPE ANALYSIS ===
-        # Check if "only" is near named entities
-        if hasattr(next_token, 'ent_type_') and next_token.ent_type_:
-            if next_token.ent_type_ in ['PERSON', 'ORG', 'PRODUCT']:
-                evidence_score -= 0.15  # "only Microsoft" - clear entity restriction
-            elif next_token.ent_type_ in ['CARDINAL', 'ORDINAL']:
-                evidence_score -= 0.1  # "only three", "only first" - clear numeric
+        sentence_complexity = len([t for t in sentence if t.pos_ in self.config['pos_tags']['verbs']])
+        if sentence_complexity == self.config['complexity_thresholds']['simple']:
+            evidence_score -= w['single_verb_reduction']
+        elif sentence_complexity > self.config['complexity_thresholds']['complex']:
+            evidence_score += w['multi_verb_boost']
         
-        if prev_token and hasattr(prev_token, 'ent_type_') and prev_token.ent_type_:
-            if prev_token.ent_type_ in ['VERB', 'ACTION']:
-                evidence_score += 0.05  # Action + only might be ambiguous
-        
-        # === SENTENCE COMPLEXITY ===
-        # Simple sentences with "only" are usually clearer
-        sentence_complexity = len([t for t in sentence if t.pos_ == 'VERB'])
-        if sentence_complexity == 1:  # Single verb
-            evidence_score -= 0.1  # Simple sentence likely clear
-        elif sentence_complexity > 2:  # Multiple verbs
-            evidence_score += 0.2  # Complex sentence increases ambiguity
-        
-        # Check for compound phrases that increase complexity
-        if any(child.dep_ in ['conj', 'cc'] for child in sentence):
-            evidence_score += 0.1  # Conjunctions increase complexity
+        if any(child.dep_ in self.config['complexity_dependencies'] for child in sentence):
+            evidence_score += w['conjunction_boost']
         
         return evidence_score
 
     def _apply_structural_clues_only(self, evidence_score: float, token, context: dict) -> float:
-        """Apply document structure-based clues for "only" placement."""
-        
+        """Apply document structure clues for "only" placement."""
         if not context:
             return evidence_score
         
+        w = self.config['structural_weights']
         block_type = context.get('block_type', 'paragraph')
         
-        # === TECHNICAL WRITING CONTEXTS ===
-        # In technical writing, "only" is often unambiguous
         if block_type in ['code_block', 'literal_block']:
-            evidence_score -= 0.8  # Code context has different syntax
+            evidence_score -= w['code_block_reduction']
         elif block_type == 'inline_code':
-            evidence_score -= 0.6  # Technical inline context
-        
-        # API documentation often uses clear "only" patterns
+            evidence_score -= w['inline_code_reduction']
         elif block_type in ['table_cell', 'table_header']:
-            evidence_score -= 0.3  # Tables often use concise, clear language
-        
-        # === HEADING CONTEXTS ===
-        # Headlines and headings use "only" more deliberately
+            evidence_score -= w['table_reduction']
         elif block_type == 'heading':
             heading_level = context.get('block_level', 1)
-            if heading_level <= 2:  # Main/section headings
-                evidence_score -= 0.4  # "Only Enterprise Features"
-            else:  # Subsection headings
-                evidence_score -= 0.2  # Still clearer than body text
-        
-        # === LIST CONTEXTS ===
-        # Lists often use "only" for clear restrictions
+            if heading_level <= 2:
+                evidence_score -= w['h1_h2_reduction']
+            else:
+                evidence_score -= w['h3_plus_reduction']
         elif block_type in ['ordered_list_item', 'unordered_list_item']:
-            evidence_score -= 0.3  # "• Only available to premium users"
-            
-            # Nested lists are more technical/detailed
+            evidence_score -= w['list_reduction']
             if context.get('list_depth', 1) > 1:
-                evidence_score -= 0.1  # More specific, often clearer
-        
-        # === ADMONITION CONTEXTS ===
-        # Notes, warnings, etc. often use "only" clearly
+                evidence_score -= w['nested_list_reduction']
         elif block_type == 'admonition':
             admonition_type = context.get('admonition_type', '').upper()
-            if admonition_type in ['NOTE', 'WARNING', 'IMPORTANT']:
-                evidence_score -= 0.2  # Clear restrictive meaning
+            if admonition_type in self.config['admonition_types']:
+                evidence_score -= w['admonition_reduction']
         
         return evidence_score
 
     def _apply_semantic_clues_only(self, evidence_score: float, token, text: str, context: dict) -> float:
         """Apply semantic and content-type clues for "only" usage."""
-        
         if not context:
             return evidence_score
         
+        w = self.config['semantic_weights']
         content_type = context.get('content_type', 'general')
         
-        # === CONTENT TYPE ANALYSIS ===
-        # Use helper methods for enhanced content type analysis
         if self._is_api_documentation(text):
-            evidence_score -= 0.3  # API docs use "only" for clear restrictions
+            evidence_score -= w['api_docs_reduction']
         elif self._is_procedural_documentation(text):
-            evidence_score -= 0.2  # Procedural docs use "only" precisely
+            evidence_score -= w['procedural_docs_reduction']
         elif self._is_reference_documentation(text):
-            evidence_score -= 0.2  # Reference docs use "only" for specifications
-        elif self._is_troubleshooting_documentation(text):  # Use base class method
-            evidence_score -= 0.1  # Troubleshooting often uses "only" for conditions
+            evidence_score -= w['reference_docs_reduction']
+        elif self._is_troubleshooting_documentation(text):
+            evidence_score -= w['troubleshooting_reduction']
         elif self._is_installation_documentation(text):
-            evidence_score -= 0.2  # Installation docs use "only" for requirements
+            evidence_score -= w['installation_reduction']
         elif self._is_configuration_documentation(text):
-            evidence_score -= 0.2  # Config docs use "only" for settings
-        
-        # General technical content analysis
+            evidence_score -= w['configuration_reduction']
         elif content_type == 'technical':
-            # CRITICAL: Don't reduce evidence if classic ambiguous pattern detected
             if not self._detect_classic_noun_only_verb_pattern(token, token.sent):
-                evidence_score -= 0.15  # Technical writing more precise (reduced from 0.2)
-                
-                # Check for technical patterns nearby
+                evidence_score -= w['technical_content_reduction']
                 if self._has_technical_context_words(token.sent.text, distance=5):
-                    evidence_score -= 0.15  # "only supports HTTPS", "read-only access" (reduced from 0.2)
-            # If classic pattern detected, preserve the evidence for flagging
-        
-        # Procedural content uses "only" for clear restrictions
+                    evidence_score -= w['technical_content_reduction']
         elif content_type == 'procedural':
-            evidence_score -= 0.2  # Step-by-step instructions are precise
-        
-        # Marketing content may use "only" more creatively
+            evidence_score -= w['procedural_content_reduction']
         elif content_type == 'marketing':
-            evidence_score += 0.1  # Marketing may be less precise
-        
-        # Legal content typically uses "only" precisely
+            evidence_score += w['marketing_boost']
         elif content_type == 'legal':
-            evidence_score -= 0.3  # Legal writing very precise
-        
-        # Academic content generally careful with "only"
+            evidence_score -= w['legal_reduction']
         elif content_type == 'academic':
-            evidence_score -= 0.1  # Academic writing careful
+            evidence_score -= w['academic_reduction']
         
-        # === DOMAIN-SPECIFIC PATTERNS ===
         domain = context.get('domain', 'general')
         if domain in ['software', 'engineering', 'devops']:
-            evidence_score -= 0.2  # Technical domains use "only" precisely
+            evidence_score -= w['technical_domain_reduction']
         elif domain in ['api', 'documentation']:
-            evidence_score -= 0.3  # API docs use "only" for clear restrictions
+            evidence_score -= w['api_domain_reduction']
         
-        # === AUDIENCE CONSIDERATIONS ===
         audience = context.get('audience', 'general')
         if audience in ['developer', 'expert']:
-            evidence_score -= 0.2  # Expert audience expects precise language
+            evidence_score -= w['expert_audience_reduction']
         elif audience in ['beginner', 'general']:
-            evidence_score += 0.1  # General audience needs clearer placement
+            evidence_score += w['general_audience_boost']
         
-        # === SENTENCE PATTERNS ===
-        # Look for common unambiguous patterns
         sentence_text = token.sent.text.lower()
         
-        # Clear restrictive patterns
-        if any(pattern in sentence_text for pattern in [
-            'only if', 'only when', 'only supports', 'only available', 
-            'only works', 'only allows', 'only accepts', 'read-only',
-            'write-only', 'only applies', 'only required'
-        ]):
-            evidence_score -= 0.3  # Common clear patterns
+        if any(pattern in sentence_text for pattern in self.config['clear_patterns']):
+            evidence_score -= w['clear_pattern_reduction']
         
-        # Potentially ambiguous patterns
-        if any(pattern in sentence_text for pattern in [
-            'can only', 'will only', 'should only'
-        ]):
-            evidence_score += 0.1  # Could be clearer as "can X only Y"
+        if any(pattern in sentence_text for pattern in self.config['ambiguous_patterns']):
+            evidence_score += w['ambiguous_pattern_boost']
         
         return evidence_score
 
     def _apply_feedback_clues_only(self, evidence_score: float, token, context: dict) -> float:
-        """Apply clues learned from user feedback patterns for "only" placement."""
-        
-        # Load cached feedback patterns
+        """Apply feedback patterns for "only" placement."""
+        w = self.config['feedback_weights']
         feedback_patterns = self._get_cached_feedback_patterns('adverbs_only')
         
-        # Get sentence context for pattern matching
         sentence_text = token.sent.text.lower()
         
-        # Check if this "only" pattern is consistently accepted
         accepted_patterns = feedback_patterns.get('accepted_only_patterns', set())
         for pattern in accepted_patterns:
             if pattern in sentence_text:
-                evidence_score -= 0.4  # Users consistently accept this pattern
+                evidence_score -= w['accepted_pattern_reduction']
                 break
         
-        # Check if this "only" pattern is consistently flagged as problematic
         flagged_patterns = feedback_patterns.get('flagged_only_patterns', set())
         for pattern in flagged_patterns:
             if pattern in sentence_text:
-                evidence_score += 0.3  # Users consistently find this ambiguous
+                evidence_score += w['flagged_pattern_boost']
                 break
         
-        # Check position-based feedback
         sent_tokens = list(token.sent)
-        token_position = None
-        for i, sent_token in enumerate(sent_tokens):
-            if sent_token.i == token.i:
-                token_position = i
-                break
+        token_position = next((i for i, t in enumerate(sent_tokens) if t.i == token.i), None)
         
         if token_position is not None:
             position_feedback = feedback_patterns.get('only_position_feedback', {})
-            if token_position < 2:  # Beginning positions
-                acceptance_rate = position_feedback.get('beginning', 0.8)
-            elif token_position > len(sent_tokens) - 3:  # End positions
-                acceptance_rate = position_feedback.get('end', 0.6)
-            else:  # Middle positions
-                acceptance_rate = position_feedback.get('middle', 0.4)
+            if token_position < 2:
+                acceptance_rate = position_feedback.get('beginning', w['position_beginning_acceptance'])
+            elif token_position > len(sent_tokens) - 3:
+                acceptance_rate = position_feedback.get('end', w['position_end_acceptance'])
+            else:
+                acceptance_rate = position_feedback.get('middle', w['position_middle_acceptance'])
             
-            # Adjust evidence based on position acceptance rate
             if acceptance_rate > 0.7:
-                evidence_score -= 0.2
+                evidence_score -= w['high_acceptance_reduction']
             elif acceptance_rate < 0.4:
-                evidence_score += 0.2
+                evidence_score += w['low_acceptance_boost']
         
         return evidence_score
 
-    # === HELPER METHODS FOR SMART MESSAGING ===
-
     def _get_contextual_message(self, token, evidence_score: float) -> str:
-        """Generate context-aware error messages based on evidence score."""
-        
-        # Check if this is the classic ambiguous pattern
+        """Generate context-aware error messages."""
         if self._detect_classic_noun_only_verb_pattern(token, token.sent):
             return "Classic ambiguous placement: 'only' could modify either the subject or the verb, creating confusion."
         
-        if evidence_score > 0.8:
+        thresholds = self.config['evidence_thresholds']
+        if evidence_score > thresholds['high_ambiguity']:
             return "The placement of 'only' in this sentence is ambiguous and may confuse readers."
-        elif evidence_score > 0.5:
+        elif evidence_score > thresholds['moderate_ambiguity']:
             return "Consider reviewing the placement of 'only' to ensure clarity."
         else:
             return "The word 'only' could potentially be clearer depending on its intended meaning."
 
     def _generate_smart_suggestions(self, token, evidence_score: float, context: dict) -> List[str]:
-        """Generate context-aware suggestions based on evidence score and context."""
-        
+        """Generate context-aware suggestions."""
         suggestions = []
         
-        # CRITICAL: Check for classic ambiguous pattern and provide specific guidance
         if self._detect_classic_noun_only_verb_pattern(token, token.sent):
             sent_tokens = list(token.sent)
-            token_idx = None
-            for i, sent_token in enumerate(sent_tokens):
-                if sent_token.i == token.i:
-                    token_idx = i
-                    break
+            token_idx = next((i for i, t in enumerate(sent_tokens) if t.i == token.i), None)
             
             if token_idx and token_idx > 0:
                 prev_token = sent_tokens[token_idx - 1]
@@ -449,30 +321,21 @@ class AdverbsOnlyRule(BaseLanguageRule):
                 if next_token:
                     suggestions.append(f"If you mean 'only {next_token.text}' (limited action): Move to '{prev_token.text} can only {next_token.text}...'")
                 suggestions.append("Consider rephrasing entirely to eliminate ambiguity.")
-                return suggestions  # Return specific suggestions for this pattern
+                return suggestions
         
-        # Analyze current placement for non-classic patterns
         sent_tokens = list(token.sent)
-        token_position = None
-        for i, sent_token in enumerate(sent_tokens):
-            if sent_token.i == token.i:
-                token_position = i
-                break
+        token_position = next((i for i, t in enumerate(sent_tokens) if t.i == token.i), None)
         
-        # Base suggestion
         suggestions.append("Place 'only' immediately before the word or phrase it modifies.")
         
-        # Position-specific suggestions
         if token_position is not None:
-            if token_position > len(sent_tokens) // 2:  # Second half of sentence
+            if token_position > len(sent_tokens) // 2:
                 suggestions.append("Consider moving 'only' earlier in the sentence for clarity.")
             
-            # Look for what "only" might be modifying
             next_token = token.nbor(1) if token.i < len(token.doc) - 1 else None
-            if next_token and next_token.pos_ in ['NOUN', 'VERB']:
+            if next_token and next_token.pos_ in self.config['pos_tags']['nouns'] + self.config['pos_tags']['verbs']:
                 suggestions.append(f"If 'only' modifies '{next_token.text}', consider: 'only {next_token.text}'.")
         
-        # Context-specific suggestions
         if context:
             content_type = context.get('content_type', 'general')
             if content_type == 'technical':
@@ -480,148 +343,93 @@ class AdverbsOnlyRule(BaseLanguageRule):
             elif content_type == 'procedural':
                 suggestions.append("In instructions, clarify exactly what limitation 'only' expresses.")
         
-        # Evidence-based suggestions
+        thresholds = self.config['evidence_thresholds']
         if evidence_score > 0.7:
             suggestions.append("Consider rephrasing the sentence entirely to avoid ambiguity.")
-        elif evidence_score < 0.3:
+        elif evidence_score < thresholds['low_ambiguity']:
             suggestions.append("The current placement may be acceptable, but review for your intended meaning.")
         
         return suggestions
     
-    # === CRITICAL PATTERN DETECTION METHODS ===
-    
     def _detect_classic_noun_only_verb_pattern(self, token, sentence) -> bool:
-        """
-        CRITICAL: Detect the classic ambiguous [Noun] [only] [Verb] pattern.
-        
-        This pattern creates ambiguity because "only" could modify either:
-        1. The noun (restrictive: "only users" = users but not admins)
-        2. The verb (scope limitation: "only edit" = edit but not delete)
-        
-        Examples:
-        - "Users only can edit files" (ambiguous)
-        - "Administrators only have access" (ambiguous)
-        
-        Returns True if this classic ambiguous pattern is detected.
-        """
+        """Detect the classic ambiguous [Noun] [only] [Verb] pattern."""
         sent_tokens = list(sentence)
-        token_idx = None
-        
-        # Find the position of "only" in the sentence
-        for i, sent_token in enumerate(sent_tokens):
-            if sent_token.i == token.i:
-                token_idx = i
-                break
+        token_idx = next((i for i, t in enumerate(sent_tokens) if t.i == token.i), None)
         
         if token_idx is None or token_idx == 0:
             return False
         
-        # Check for [Noun] [only] [Verb] pattern
         prev_token = sent_tokens[token_idx - 1] if token_idx > 0 else None
         next_token = sent_tokens[token_idx + 1] if token_idx < len(sent_tokens) - 1 else None
         
-        # PATTERN 1: Direct [Noun] [only] [Verb] 
         if (prev_token and next_token and 
-            prev_token.pos_ in ['NOUN', 'PRON', 'PROPN'] and
-            next_token.pos_ == 'VERB'):
+            prev_token.pos_ in self.config['pos_tags']['nouns'] and
+            next_token.pos_ in self.config['pos_tags']['verbs']):
             
-            # Additional validation: ensure this isn't a compound noun
-            if not (prev_token.dep_ == 'compound' and next_token.dep_ == 'compound'):
-                # Check that prev_token is likely the subject
-                if prev_token.dep_ in ['nsubj', 'nsubjpass'] or self._is_likely_subject(prev_token):
+            if not (prev_token.dep_ in self.config['compound_dependencies'] and 
+                    next_token.dep_ in self.config['compound_dependencies']):
+                if prev_token.dep_ in self.config['subject_dependencies'] or self._is_likely_subject(prev_token):
                     return True
         
-        # PATTERN 2: [Noun] [only] [Modal/Aux] [Verb]
-        # Examples: "Users only can edit", "Admins only should have"
         if (prev_token and token_idx + 2 < len(sent_tokens) and
-            prev_token.pos_ in ['NOUN', 'PRON', 'PROPN']):
+            prev_token.pos_ in self.config['pos_tags']['nouns']):
             
-            # Check if next token is modal/auxiliary
-            if (next_token and next_token.pos_ == 'AUX' or 
-                (next_token and next_token.lemma_ in ['can', 'could', 'will', 'would', 'should', 'must', 'may', 'might'])):
-                
-                # Check if token after that is a verb
+            if (next_token and (next_token.pos_ == 'AUX' or next_token.lemma_ in self.config['modal_verbs'])):
                 verb_token = sent_tokens[token_idx + 2]
-                if verb_token.pos_ == 'VERB':
-                    # Validate that prev_token is the subject
-                    if prev_token.dep_ in ['nsubj', 'nsubjpass'] or self._is_likely_subject(prev_token):
+                if verb_token.pos_ in self.config['pos_tags']['verbs']:
+                    if prev_token.dep_ in self.config['subject_dependencies'] or self._is_likely_subject(prev_token):
                         return True
         
-        # PATTERN 3: [Noun] [only] [have/has] - Special case for "have" constructions
         if (prev_token and next_token and
-            prev_token.pos_ in ['NOUN', 'PRON', 'PROPN'] and
+            prev_token.pos_ in self.config['pos_tags']['nouns'] and
             next_token.lemma_ == 'have'):
             
-            if prev_token.dep_ in ['nsubj', 'nsubjpass'] or self._is_likely_subject(prev_token):
+            if prev_token.dep_ in self.config['subject_dependencies'] or self._is_likely_subject(prev_token):
                 return True
         
         return False
     
     def _is_likely_subject(self, token) -> bool:
-        """Check if a token is likely functioning as a sentence subject."""
-        # Direct subject dependencies
-        if token.dep_ in ['nsubj', 'nsubjpass']:
+        """Check if token is likely functioning as sentence subject."""
+        if token.dep_ in self.config['subject_dependencies']:
             return True
         
-        # Check if it's the first noun/pronoun in the sentence (likely subject)
         sent_tokens = list(token.sent)
         for sent_token in sent_tokens:
-            if sent_token.pos_ in ['NOUN', 'PRON', 'PROPN']:
+            if sent_token.pos_ in self.config['pos_tags']['nouns']:
                 return sent_token.i == token.i
         
-        # Check if it's connected to a verb as subject
-        if token.head.pos_ == 'VERB':
-            # Look at the relationship between token and verb
+        if token.head.pos_ in self.config['pos_tags']['verbs']:
             for child in token.head.children:
-                if child.i == token.i and child.dep_ in ['nsubj', 'nsubjpass']:
+                if child.i == token.i and child.dep_ in self.config['subject_dependencies']:
                     return True
         
         return False
     
     def _detect_clear_only_modification_pattern(self, token, sentence) -> bool:
-        """
-        Detect clear "only [determiner/noun phrase]" patterns that are unambiguous.
-        
-        Examples of CLEAR patterns:
-        - "only this file" 
-        - "only the system"
-        - "only five users"
-        - "only valid data"
-        
-        These are unambiguous because "only" clearly modifies the noun phrase.
-        """
+        """Detect clear "only [determiner/noun phrase]" patterns."""
         next_token = token.nbor(1) if token.i < len(token.doc) - 1 else None
         if not next_token:
             return False
         
-        # Pattern 1: "only [determiner] [noun/adjective]"
-        # Examples: "only this file", "only the system"
-        if next_token.pos_ == 'DET':
-            # Check if there's a noun after the determiner
+        if next_token.pos_ in self.config['pos_tags']['determiners']:
             next_next_token = next_token.nbor(1) if next_token.i < len(next_token.doc) - 1 else None
-            if next_next_token and next_next_token.pos_ in ['NOUN', 'PROPN', 'ADJ']:
+            if next_next_token and next_next_token.pos_ in self.config['pos_tags']['nouns'] + self.config['pos_tags']['adjectives']:
                 return True
         
-        # Pattern 2: "only [number] [noun]"  
-        # Examples: "only five users", "only 3 files"
-        if next_token.pos_ == 'NUM' or next_token.like_num:
+        if next_token.pos_ in self.config['pos_tags']['numbers'] or next_token.like_num:
             next_next_token = next_token.nbor(1) if next_token.i < len(next_token.doc) - 1 else None
-            if next_next_token and next_next_token.pos_ in ['NOUN', 'PROPN']:
+            if next_next_token and next_next_token.pos_ in self.config['pos_tags']['nouns']:
                 return True
         
-        # Pattern 3: "only [adjective] [noun]"
-        # Examples: "only valid data", "only important files"  
-        if next_token.pos_ == 'ADJ':
+        if next_token.pos_ in self.config['pos_tags']['adjectives']:
             next_next_token = next_token.nbor(1) if next_token.i < len(next_token.doc) - 1 else None
-            if next_next_token and next_next_token.pos_ in ['NOUN', 'PROPN']:
+            if next_next_token and next_next_token.pos_ in self.config['pos_tags']['nouns']:
                 return True
         
-        # Pattern 4: "only [specific noun]" (proper nouns, technical terms)
-        # Examples: "only administrators", "only MySQL"
-        if next_token.pos_ in ['PROPN', 'NOUN']:
-            # Check if it's not followed by a verb (which would make it ambiguous)
+        if next_token.pos_ in self.config['pos_tags']['nouns']:
             next_next_token = next_token.nbor(1) if next_token.i < len(next_token.doc) - 1 else None
-            if not (next_next_token and next_next_token.pos_ == 'VERB'):
+            if not (next_next_token and next_next_token.pos_ in self.config['pos_tags']['verbs']):
                 return True
         
         return False

@@ -9,6 +9,7 @@ from rules.modular_compliance.inter_module_analysis_rule import InterModuleAnaly
 from rules.modular_compliance.concept_module_rule import ConceptModuleRule
 from rules.modular_compliance.procedure_module_rule import ProcedureModuleRule
 from rules.modular_compliance.reference_module_rule import ReferenceModuleRule
+from rules.modular_compliance.assembly_module_rule import AssemblyModuleRule
 
 
 class AdvancedModularAnalyzer:
@@ -28,6 +29,7 @@ class AdvancedModularAnalyzer:
         self.concept_rule = ConceptModuleRule()
         self.procedure_rule = ProcedureModuleRule()
         self.reference_rule = ReferenceModuleRule()
+        self.assembly_rule = AssemblyModuleRule()
         
         # Phase 5 advanced features
         self.xref_rule = CrossReferenceRule()
@@ -38,7 +40,8 @@ class AdvancedModularAnalyzer:
         self.module_rules = {
             'concept': self.concept_rule,
             'procedure': self.procedure_rule,
-            'reference': self.reference_rule
+            'reference': self.reference_rule,
+            'assembly': self.assembly_rule
         }
     
     def analyze_comprehensive(self, text: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -116,6 +119,10 @@ class AdvancedModularAnalyzer:
         
         # Get basic compliance results
         basic_rule = self.module_rules.get(module_type, self.concept_rule)
+        
+        if basic_rule is None:
+            return []
+        
         basic_issues = basic_rule.analyze(text, context)
         
         # Add advanced insights as additional issues

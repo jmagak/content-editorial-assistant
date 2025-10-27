@@ -103,7 +103,13 @@ git_commands:
       evidence: 0.8
       category: "git_operation"
       description: "Copy repository"
-      legitimate_patterns: ["git clone", "clone repository", "clone repo", "clone project"]
+      legitimate_patterns: ["git clone command", "the clone command", "use clone", "clone utility", "a clone of"]
+      
+    - command: "fork"
+      evidence: 0.8
+      category: "git_operation"
+      description: "Create a copy of repository in your account"
+      legitimate_patterns: ["create a fork", "the fork of", "a fork of", "GitHub fork button", "fork feature"]
 
   medium_specificity:
     - command: "branch"

@@ -73,6 +73,58 @@ proper_nouns_ending_in_s:
         - "Express middleware"
         - "Express server"
       never_suggest: ["expres"]
+  
+  gitops:
+    type: "devops_methodology"
+    explanation: "GitOps is a proper noun for the DevOps methodology using Git as source of truth"
+    usage_examples:
+      correct:
+        - "gitops-template directory"
+        - "GitOps workflow"
+        - "GitOps deployment"
+        - "GitOps approach"
+      never_suggest: ["gitop"]
+    linguistic_basis: "GitOps = Git + Operations; the 's' is part of 'Ops', not a plural marker"
+    objective_truth: "GitOps is a singular proper noun per CNCF and industry usage"
+    false_negative_risk: "zero - 'gitop' is not a word, no legitimate plural to miss"
+    inversion_test: "passed - guard only applies to exact term 'gitops', not similar words"
+  
+  devops:
+    type: "devops_methodology"
+    explanation: "DevOps is a proper noun for the software development methodology"
+    usage_examples:
+      correct:
+        - "DevOps practices"
+        - "DevOps team"
+        - "DevOps pipeline"
+      never_suggest: ["devop"]
+    linguistic_basis: "DevOps = Development + Operations; the 's' is part of 'Ops', not a plural marker"
+  
+  acs:
+    type: "security_product"
+    explanation: "ACS is an acronym for Advanced Cluster Security (RHACS)"
+    usage_examples:
+      correct:
+        - "ACS scans"
+        - "Enable ACS"
+        - "ACS integration"
+        - "RHACS configuration"
+      never_suggest: ["ac"]
+    linguistic_basis: "ACS is an acronym (Advanced Cluster Security); the 's' is part of 'Security', not a plural marker"
+    objective_truth: "ACS/RHACS is a singular proper noun for Red Hat's security product"
+    false_negative_risk: "zero - 'ac' is not a word, no legitimate plural to miss"
+    inversion_test: "passed - guard only applies to exact acronym 'acs'"
+  
+  rhacs:
+    type: "security_product"
+    explanation: "RHACS is an acronym for Red Hat Advanced Cluster Security"
+    usage_examples:
+      correct:
+        - "RHACS scans"
+        - "RHACS policies"
+        - "Enable RHACS"
+      never_suggest: ["rhac"]
+    linguistic_basis: "RHACS is an acronym; the 's' is part of 'Security', not a plural marker"
 
   # Business/Organization names
   ibm:
@@ -400,6 +452,21 @@ plural_adjectives:
     - "reports generation"
     - "metrics collection"
     - "analytics dashboard"
+    
+    # DevOps and CI/CD pipeline terms
+    - "pipelines repository"     # Repository containing pipeline definitions
+    - "pipelines directory"      # Directory containing pipeline files
+    - "pipelines configuration"  # Configuration for pipelines
+    - "templates repository"     # Repository containing templates
+    - "templates directory"      # Directory containing templates
+    - "workflows repository"     # Repository containing workflows
+    - "workflows directory"      # Directory containing workflow files
+    - "builds pipeline"          # Pipeline for builds
+    - "deployments pipeline"     # Already listed above but including for completeness
+    - "tasks directory"          # Directory containing tasks
+    - "scripts directory"        # Directory containing scripts
+    - "artifacts repository"     # Repository for storing artifacts
+    - "containers registry"      # Registry for containers
 
 # Evidence scoring guidelines
 evidence_levels:

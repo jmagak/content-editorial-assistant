@@ -2,9 +2,14 @@
 Lists Rule (Enhanced with Evidence-Based Analysis)
 Based on IBM Style Guide topic: "Lists"
 Enhanced to follow evidence-based rule development methodology for zero false positives.
+
+Context-Aware Enhancement:
+- Uses context inference service for robust content type detection
+- Implements Options 1, 2, 3 for maximum reliability
 """
 from typing import List, Dict, Any, Optional
 from .base_structure_rule import BaseStructureRule
+from ..context_inference import get_context_inference_service
 import re
 
 try:
@@ -29,48 +34,64 @@ class ListsRule(BaseStructureRule):
 
     def _get_grammatical_form(self, doc: Doc) -> str:
         """
-        Analyzes a SpaCy doc object and determines its grammatical form using morphological analysis.
+        Analyzes a SpaCy doc and returns its FUNCTIONAL grammatical form.
+        This groups different but functionally similar structures (e.g., all noun phrases)
+        to prevent false positives in parallel structure checks.
         """
         if not doc or len(doc) == 0:
-            return "EMPTY"
+            return "FUNCTIONAL_EMPTY"
 
-        # Enhanced linguistic anchors for different grammatical forms
         first_token = doc[0]
-        
-        # Imperative verbs (base form)
-        if first_token.pos_ == 'VERB' and first_token.tag_ == 'VB':
-            return "Imperative Phrase"
-        
-        # Gerund phrases
+
+        # === Category 1: Imperative Phrases (Action Verbs) ===
+        # Identifies direct commands like "Run the installer."
+        common_imperatives = {
+            'verify', 'check', 'configure', 'install', 'run', 'execute', 'click', 'select',
+            'perform', 'ensure', 'test', 'validate', 'confirm', 'review',
+            'update', 'modify', 'change', 'set', 'create', 'delete',
+            'add', 'remove', 'start', 'stop', 'restart', 'enable', 'disable',
+            'open', 'close', 'choose', 'enter', 'type',
+            'save', 'load', 'download', 'upload', 'connect', 'disconnect',
+            'monitor', 'observe', 'watch', 'inspect', 'examine', 'analyze'
+        }
+        if (first_token.pos_ == 'VERB' and first_token.tag_ == 'VB') or (first_token.lemma_.lower() in common_imperatives):
+            return "FUNCTIONAL_IMPERATIVE"
+
+        # === Category 2: Gerund & Infinitive Phrases (Action Descriptions) ===
         if first_token.pos_ == 'VERB' and first_token.tag_ == 'VBG':
-            return "Gerund Phrase"
+            return "FUNCTIONAL_GERUND_PHRASE"
+        if first_token.lower_ == 'to' and len(doc) > 1 and doc[1].pos_ == 'VERB':
+            return "FUNCTIONAL_INFINITIVE_PHRASE"
+            
+        # === Category 3: Noun Phrases (Things, Concepts, Results) ===
+        is_noun_phrase = False
+        if first_token.pos_ in ['NOUN', 'PROPN', 'PRON']:
+            is_noun_phrase = True
+        elif first_token.pos_ in ['ADJ', 'ADV', 'DET'] and any(t.pos_ in ['NOUN', 'PROPN'] for t in doc):
+            is_noun_phrase = True
         
-        # Complete sentences (have subject and predicate)
+        if is_noun_phrase:
+            return "FUNCTIONAL_NOUN_PHRASE"
+
+        # === Category 4: Complete Sentences ===
+        # Identifies full sentences with both a subject and a verb.
         has_subject = any(token.dep_ in ('nsubj', 'nsubjpass') for token in doc)
         has_verb = any(token.pos_ == 'VERB' for token in doc)
         if has_subject and has_verb:
-            return "Complete Sentence"
-        
-        # Noun phrases
-        if first_token.pos_ in ['NOUN', 'PROPN']:
-            return "Noun Phrase"
-        
-        # Adjective phrases
-        if first_token.pos_ == 'ADJ':
-            return "Adjective Phrase"
-        
-        # Prepositional phrases
-        if first_token.pos_ == 'ADP':
-            return "Prepositional Phrase"
-        
-        # Default to fragment
-        return "Fragment"
+            return "FUNCTIONAL_SENTENCE"
+
+        # Fallback for other fragments
+        return "FUNCTIONAL_FRAGMENT"
 
     def analyze(self, text: str, sentences: List[str], nlp=None, context=None) -> List[Dict[str, Any]]:
         """
         Analyzes lists for style violations using evidence-based scoring.
         Each potential violation gets nuanced evidence assessment for precision.
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp or len(sentences) < 2:
             return []
@@ -133,6 +154,45 @@ class ListsRule(BaseStructureRule):
         if not context:
             return 0.0  # No context available
         
+        # === OPTION 1, 2, 3 INTEGRATION: Robust Content Type Detection ===
+        # Use context inference service for multi-layered detection:
+        # 1. Explicit metadata (Option 1 - fixed in AsciiDocBlock.get_context_info)
+        # 2. YAML hints (Option 2 - fallback based on block type)
+        # 3. Structural inference (Option 3 - analyze headings/titles)
+        
+        context_service = get_context_inference_service()
+        
+        # Check if this is in a procedural section
+        block_type = context.get('block_type', '')
+        if block_type == 'olist' and context_service.is_in_procedural_section(context):
+            return 0.0  # Ordered lists in procedures follow sequential logic, not grammatical parallelism
+        
+        # Check if in troubleshooting section (special case of procedural)
+        if context_service.is_troubleshooting_section(context):
+            return 0.0  # Troubleshooting lists follow imperative patterns and are naturally parallel
+        
+        # === SEMANTIC CLUE: ZERO FALSE POSITIVE GUARD for Non-Procedural Lists ===
+        preceding_heading = context.get('preceding_heading', '').lower()
+        current_heading = context.get('current_heading', '').lower()
+        parent_title = context.get('parent_title', '').lower()
+        
+        # Keywords that indicate non-procedural list contexts where parallelism is NOT mandatory
+        non_imperative_list_headings = [
+            'verification', 'troubleshooting', 'prerequisites', 'before you begin',
+            'before you start', 'requirements', 'required', 'what you need',
+            'resources', 'features', 'components', 'definitions', 'examples',
+            'reference', 'overview', 'background', 'introduction', 'summary',
+            'benefits', 'advantages', 'considerations', 'notes', 'tips',
+            'see also', 'related', 'additional', 'next steps', 'further reading'
+        ]
+        
+        # Check if ANY of the heading sources contain non-imperative keywords
+        for keyword in non_imperative_list_headings:
+            if (keyword in preceding_heading or 
+                keyword in current_heading or 
+                keyword in parent_title):
+                return 0.0
+        
         # Don't flag lists in quoted examples
         if self._is_list_in_actual_quotes(sentences, text, context):
             return 0.0  # Quoted examples are not list structure errors
@@ -193,7 +253,7 @@ class ListsRule(BaseStructureRule):
                 evidence_score += 0.2
         
         # Check grammatical complexity - simple structures need more consistency
-        simple_forms = ['Noun Phrase', 'Adjective Phrase', 'Fragment']
+        simple_forms = ['FUNCTIONAL_NOUN_PHRASE', 'FUNCTIONAL_FRAGMENT']
         if most_common_form in simple_forms:
             evidence_score += 0.1  # Simple lists should be very consistent
         
@@ -209,8 +269,12 @@ class ListsRule(BaseStructureRule):
         # Content type adjustments
         content_type = context.get('content_type', 'general') if context else 'general'
         
-        if content_type == 'procedural':
-            evidence_score += 0.2  # Procedural lists need strong consistency
+        # CRITICAL FIX: Don't increase evidence for PROCEDURE content type
+        # Procedures have sequential steps that don't need grammatical parallelism
+        if content_type.upper() == 'PROCEDURE':
+            evidence_score -= 0.8  # Procedures follow sequential logic, heavily suppress
+        elif content_type == 'procedural':
+            evidence_score += 0.2  # Other procedural lists need strong consistency
         elif content_type == 'technical':
             evidence_score -= 0.1  # Technical lists might legitimately vary
         elif content_type == 'marketing':
@@ -380,13 +444,13 @@ class ListsRule(BaseStructureRule):
             if parallel_issues:
                 expected_form = parallel_issues[0].get('expected_form', 'consistent structure')
                 
-                if expected_form == 'Imperative Phrase':
+                if expected_form == 'FUNCTIONAL_IMPERATIVE':
                     suggestions.append("Start each list item with an action verb (e.g., 'Configure', 'Install', 'Run').")
-                elif expected_form == 'Noun Phrase':
+                elif expected_form == 'FUNCTIONAL_NOUN_PHRASE':
                     suggestions.append("Use noun phrases for all list items (e.g., 'Database configuration', 'User settings').")
-                elif expected_form == 'Complete Sentence':
+                elif expected_form == 'FUNCTIONAL_SENTENCE':
                     suggestions.append("Write each list item as a complete sentence with subject and verb.")
-                elif expected_form == 'Gerund Phrase':
+                elif expected_form == 'FUNCTIONAL_GERUND':
                     suggestions.append("Start each list item with an -ing verb form (e.g., 'Configuring', 'Installing').")
                 else:
                     suggestions.append(f"Rewrite all list items to follow the '{expected_form}' pattern.")
@@ -695,15 +759,15 @@ class ListsRule(BaseStructureRule):
         most_common_form = max(form_counts, key=form_counts.get)
         
         # Map to feedback categories
-        if most_common_form == 'Imperative Phrase':
+        if most_common_form == 'FUNCTIONAL_IMPERATIVE':
             return 'procedural'
-        elif most_common_form == 'Noun Phrase':
+        elif most_common_form == 'FUNCTIONAL_NOUN_PHRASE':
             return 'descriptive'
-        elif most_common_form == 'Complete Sentence':
+        elif most_common_form == 'FUNCTIONAL_SENTENCE':
             return 'explanatory'
-        elif most_common_form == 'Gerund Phrase':
+        elif most_common_form == 'FUNCTIONAL_GERUND':
             return 'action_oriented'
-        elif most_common_form in ['Adjective Phrase', 'Fragment']:
+        elif most_common_form == 'FUNCTIONAL_FRAGMENT':
             return 'simple'
         else:
             return 'mixed'

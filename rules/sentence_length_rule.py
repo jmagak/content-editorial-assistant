@@ -136,9 +136,18 @@ class SentenceLengthRule(BaseRule):
         - Context-aware domain validation
         - Universal threshold compliance (≥0.35)
         """
+        # === UNIVERSAL CODE CONTEXT GUARD ===
+        # Skip analysis for code blocks, listings, and literal blocks (technical syntax, not prose)
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
         errors = []
         if not nlp:
             return errors
+
+        # === SURGICAL ZERO FALSE POSITIVE GUARD ===
+        # CRITICAL: Code blocks are exempt from prose style rules
+        if context and context.get('block_type') in ['code_block', 'literal_block', 'inline_code']:
+            return []
 
         for i, sentence in enumerate(sentences):
             # Handle both string and SpaCy Doc inputs for compatibility

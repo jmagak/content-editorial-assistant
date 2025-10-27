@@ -175,7 +175,7 @@ class StyleAnalyzer:
             
             # Use structural analyzer for block-aware analysis
             analysis_result = self.structural_analyzer.analyze_with_blocks(
-                text, format_hint, analysis_mode
+                text, format_hint, analysis_mode, content_type
             )
             
             # Add modular compliance analysis to the analysis section
@@ -259,36 +259,55 @@ class StyleAnalyzer:
             logger.error(f"Error calculating overall score: {e}")
             return 50.0  # Safe default
     
+    def _extract_content_type_from_file(self, text: str) -> Optional[str]:
+        """Extract content type from file attribute (file takes precedence over user selection)."""
+        import re
+        
+        match = re.search(r':_mod-docs-content-type:\s*(CONCEPT|PROCEDURE|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+        
+        match = re.search(r':_content-type:\s*(CONCEPT|PROCEDURE|REFERENCE|ASSEMBLY)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+        
+        return None
+    
     def _analyze_modular_compliance(self, text: str, content_type: str) -> Dict[str, Any]:
         """Analyze modular compliance with Phase 5 advanced features."""
         try:
-            # Import Phase 5 advanced modular analyzer
             from rules.modular_compliance.advanced_modular_analyzer import AdvancedModularAnalyzer
             
-            if content_type not in ['concept', 'procedure', 'reference']:
-                logger.warning(f"Unknown content type for modular compliance: {content_type}")
+            file_content_type = self._extract_content_type_from_file(text)
+            final_content_type = file_content_type if file_content_type else content_type
+            
+            if final_content_type not in ['concept', 'procedure', 'reference', 'assembly']:
+                logger.warning(f"Unknown content type for modular compliance: {final_content_type}")
                 return None
             
-            # Initialize advanced analyzer
+            
             analyzer = AdvancedModularAnalyzer()
             
-            # Create enhanced context
             context = {
-                'content_type': content_type,
-                'block_type': 'document'
+                'content_type': final_content_type,
+                'block_type': 'document',
+                'content_type_source': 'file' if file_content_type else 'user_selection',
+                'user_selected_type': content_type,
+                'file_declared_type': file_content_type
             }
             
             # Use backward-compatible analysis that includes Phase 5 enhancements
             compliance_errors = analyzer.analyze_basic_with_advanced_hints(text, context)
             
-            # Format results with Phase 5 enhancements
             result = {
-                'content_type': content_type,
+                'content_type': final_content_type,
                 'total_issues': len(compliance_errors),
                 'issues_by_severity': self._categorize_compliance_issues(compliance_errors),
                 'issues': compliance_errors,
                 'compliance_status': self._determine_compliance_status(compliance_errors),
-                # Phase 5 enhancements
+                'content_type_source': 'file' if file_content_type else 'user_selection',
+                'user_selected_type': content_type,
+                'file_declared_type': file_content_type,
                 'advanced_features_enabled': True,
                 'phase5_capabilities': {
                     'cross_reference_validation': True,
@@ -304,12 +323,13 @@ class StyleAnalyzer:
             logger.warning(f"Advanced modular compliance analyzer not available, falling back to basic: {e}")
             # Fallback to basic analysis
             try:
-                from rules.modular_compliance import ConceptModuleRule, ProcedureModuleRule, ReferenceModuleRule
+                from rules.modular_compliance import ConceptModuleRule, ProcedureModuleRule, ReferenceModuleRule, AssemblyModuleRule
                 
                 rule_map = {
                     'concept': ConceptModuleRule,
                     'procedure': ProcedureModuleRule, 
-                    'reference': ReferenceModuleRule
+                    'reference': ReferenceModuleRule,
+                    'assembly': AssemblyModuleRule
                 }
                 
                 rule_class = rule_map[content_type]
@@ -322,12 +342,18 @@ class StyleAnalyzer:
                 
                 compliance_errors = rule.analyze(text, context)
                 
+                file_content_type = self._extract_content_type_from_file(text)
+                final_content_type = file_content_type if file_content_type else content_type
+                
                 return {
-                    'content_type': content_type,
+                    'content_type': final_content_type,
                     'total_issues': len(compliance_errors),
                     'issues_by_severity': self._categorize_compliance_issues(compliance_errors),
                     'issues': compliance_errors,
                     'compliance_status': self._determine_compliance_status(compliance_errors),
+                    'content_type_source': 'file' if file_content_type else 'user_selection',
+                    'user_selected_type': content_type,
+                    'file_declared_type': file_content_type,
                     'advanced_features_enabled': False
                 }
             except ImportError:

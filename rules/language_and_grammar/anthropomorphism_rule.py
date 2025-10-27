@@ -1,7 +1,6 @@
 """
-Anthropomorphism Rule (YAML-based)
-Based on IBM Style Guide topic: "Anthropomorphism"
-Uses YAML-based entities vocabulary for maintainable anthropomorphism detection.
+Anthropomorphism Rule
+Based on IBM Style Guide: Detects inappropriate anthropomorphism using YAML-based configuration.
 """
 from typing import List, Dict, Any
 from .base_language_rule import BaseLanguageRule
@@ -13,26 +12,21 @@ except ImportError:
     Doc = None
 
 class AnthropomorphismRule(BaseLanguageRule):
-    """
-    Checks for instances where inanimate objects or abstract concepts are
-    given human characteristics using YAML-based entity vocabulary.
-    Uses dependency parsing to identify the grammatical subject of human-like verbs.
-    """
+    """Detects inappropriate anthropomorphism using dependency parsing and evidence-based scoring."""
     
     def __init__(self):
         super().__init__()
         self.vocabulary_service = get_anthropomorphism_vocabulary()
+        self.config = self.vocabulary_service.get_anthropomorphism_config()
     
     def _get_rule_type(self) -> str:
-        """Returns the unique identifier for this rule."""
         return 'anthropomorphism'
 
     def analyze(self, text: str, sentences: List[str], nlp=None, context=None) -> List[Dict[str, Any]]:
-        """
-        Analyzes sentences for anthropomorphism using evidence-based scoring.
-        Uses sophisticated linguistic analysis to distinguish inappropriate anthropomorphism
-        from acceptable technical metaphors and conventional usage patterns.
-        """
+        """Analyze sentences for inappropriate anthropomorphism."""
+        if context and context.get('block_type') in ['listing', 'literal', 'code_block', 'inline_code']:
+            return []
+        
         errors = []
         if not nlp:
             return errors
@@ -41,17 +35,14 @@ class AnthropomorphismRule(BaseLanguageRule):
         
         for i, sent in enumerate(doc.sents):
             for token in sent:
-                # Check for potential anthropomorphic patterns
                 anthropomorphism_data = self._detect_potential_anthropomorphism(token, sent)
                 
                 if anthropomorphism_data:
-                    # Calculate evidence score for this potential anthropomorphism
                     evidence_score = self._calculate_anthropomorphism_evidence(
                         token, anthropomorphism_data['subject'], sent, text, context
                     )
                     
-                    # Only create error if evidence suggests inappropriate anthropomorphism
-                    if evidence_score > 0.1:  # Low threshold - let enhanced validation decide
+                    if evidence_score > self.config['evidence_thresholds']['min_threshold']:
                         errors.append(self._create_error(
                             sentence=sent.text,
                             sentence_index=i,
@@ -60,38 +51,25 @@ class AnthropomorphismRule(BaseLanguageRule):
                             severity='low',
                             text=text,
                             context=context,
-                            evidence_score=evidence_score,  # Your nuanced assessment
+                            evidence_score=evidence_score,
                             span=(anthropomorphism_data['subject'].idx, token.idx + len(token.text)),
                             flagged_text=f"{anthropomorphism_data['subject'].text} {token.text}"
                         ))
         return errors
 
-    # === EVIDENCE-BASED CALCULATION METHODS ===
-
     def _detect_potential_anthropomorphism(self, token, sent):
-        """
-        Detect potential anthropomorphic patterns using flexible, context-aware analysis.
-        
-        Returns:
-            dict or None: Contains 'subject' and 'verb' if pattern detected, None otherwise
-        """
-        # Check if this token could be an anthropomorphic verb
+        """Detect potential anthropomorphic patterns."""
         if not self._could_be_anthropomorphic_verb(token):
             return None
             
-        # Find the subject of this verb
-        subject_tokens = [child for child in token.children if child.dep_ == 'nsubj']
+        subject_tokens = [child for child in token.children if child.dep_ == self.config['dependency_relations']['subject']]
         if not subject_tokens:
             return None
             
         subject = subject_tokens[0]
         
-        # Check if subject could be inappropriately anthropomorphized
         if self._could_be_inappropriately_anthropomorphized(subject):
-            return {
-                'subject': subject,
-                'verb': token
-            }
+            return {'subject': subject, 'verb': token}
         
         return None
 
@@ -146,383 +124,262 @@ class AnthropomorphismRule(BaseLanguageRule):
                 subject_lemma in business_entities)
 
     def _calculate_anthropomorphism_evidence(self, verb_token, subject_token, sentence, text: str, context: dict) -> float:
-        """
-        Calculate evidence score (0.0-1.0) for inappropriate anthropomorphism.
-        
-        Higher scores indicate stronger evidence of inappropriate anthropomorphism.
-        Lower scores indicate acceptable usage or conventional technical metaphors.
-        
-        Args:
-            verb_token: The anthropomorphic verb token
-            subject_token: The subject being anthropomorphized
-            sentence: Sentence containing the pattern
-            text: Full document text
-            context: Document context (block_type, content_type, etc.)
-            
-        Returns:
-            float: Evidence score from 0.0 (acceptable) to 1.0 (inappropriate)
-        """
-        evidence_score = 0.0
-        
-        # === STEP 1: BASE EVIDENCE ASSESSMENT ===
-        # Start with base evidence based on verb type
+        """Calculate evidence score for inappropriate anthropomorphism."""
         evidence_score = self._get_base_verb_evidence(verb_token)
-        
-        # === STEP 2: LINGUISTIC CLUES (MICRO-LEVEL) ===
         evidence_score = self._apply_linguistic_clues_anthropomorphism(evidence_score, verb_token, subject_token, sentence)
-        
-        # === STEP 3: STRUCTURAL CLUES (MESO-LEVEL) ===
         evidence_score = self._apply_structural_clues_anthropomorphism(evidence_score, verb_token, subject_token, context)
-        
-        # === STEP 4: SEMANTIC CLUES (MACRO-LEVEL) ===
         evidence_score = self._apply_semantic_clues_anthropomorphism(evidence_score, verb_token, subject_token, text, context)
-        
-        # === STEP 5: FEEDBACK PATTERNS (LEARNING CLUES) ===
         evidence_score = self._apply_feedback_clues_anthropomorphism(evidence_score, verb_token, subject_token, context)
         
-        return max(0.0, min(1.0, evidence_score))  # Clamp to valid range
+        verb_lemma = verb_token.lemma_.lower()
+        if verb_lemma in self.config['decision_verbs']:
+            min_threshold = self.config['evidence_thresholds']['decision_verb_minimum']
+            if 0.0 < evidence_score < min_threshold:
+                evidence_score = min_threshold
+        
+        return max(0.0, min(1.0, evidence_score))
 
     def _get_base_verb_evidence(self, verb_token) -> float:
-        """Get base evidence score based on the type of verb."""
+        """Get base evidence score based on verb category."""
         verb_lemma = verb_token.lemma_.lower()
+        verb_categories = self.config['verb_categories']
+        base_evidence = self.config['base_verb_evidence']
         
-        # Core human cognitive/emotional verbs - highest evidence
-        if verb_lemma in {'think', 'believe', 'feel', 'want', 'wish', 'hope', 'fear', 'love', 'hate', 'worry', 'care', 'know', 'learn'}:
-            return 0.9  # Almost always inappropriate
+        for category, verbs in verb_categories.items():
+            if verb_lemma in verbs:
+                return base_evidence[category]
         
-        # Memory/consciousness verbs - high evidence
-        elif verb_lemma in {'remember', 'forget', 'dream', 'imagine', 'doubt'}:
-            return 0.8  # Usually inappropriate
-        
-        # Communication verbs - moderate evidence (context-dependent)
-        elif verb_lemma in {'say', 'tell', 'speak', 'talk', 'ask', 'answer', 'reply'}:
-            return 0.6  # Often inappropriate but has technical uses
-        
-        # Decision/judgment verbs - lower evidence (often acceptable in tech)
-        elif verb_lemma in {'decide', 'choose', 'select', 'determine', 'expect'}:
-            return 0.4  # Often acceptable in technical contexts
-        
-        # Perception verbs - moderate evidence (context-dependent)
-        elif verb_lemma in {'see', 'detect', 'notice', 'hear', 'observe'}:
-            return 0.5  # Mixed acceptability
-        
-        # Action/capability verbs - low evidence (usually acceptable)
-        elif verb_lemma in {'allow', 'permit', 'enable', 'support', 'help', 'serve'}:
-            return 0.3  # Usually acceptable in technical writing
-        
-        else:
-            return 0.5  # Default moderate evidence
-
-    # === LINGUISTIC CLUES (MICRO-LEVEL) ===
+        return base_evidence['default']
 
     def _apply_linguistic_clues_anthropomorphism(self, evidence_score: float, verb_token, subject_token, sentence) -> float:
-        """Apply comprehensive SpaCy-based linguistic analysis clues for anthropomorphism."""
+        """Apply linguistic analysis clues for anthropomorphism."""
+        w = self.config['linguistic_weights']
         
-        # === VERB TENSE AND MOOD ANALYSIS ===
-        # Present tense feels more anthropomorphic than past/future
-        if verb_token.tag_ in ['VBZ', 'VBP']:  # Present tense
-            evidence_score += 0.1  # "The system thinks" vs "The system thought"
-        elif verb_token.tag_ in ['VBD', 'VBN']:  # Past tense/participle
-            evidence_score -= 0.1  # Less anthropomorphic feeling
-        elif verb_token.tag_ in ['VBG']:  # Present participle
-            evidence_score += 0.05  # "The system is thinking" slightly anthropomorphic
+        subject_lemma = subject_token.lemma_.lower()
+        verb_lemma = verb_token.lemma_.lower()
         
-        # === MORPHOLOGICAL FEATURES ANALYSIS ===
-        # Enhanced morphological analysis using SpaCy's morph features
+        if subject_lemma in self.config['technical_subjects'] and verb_lemma in self.config['cognitive_agent_verbs']:
+            evidence_score += w['technical_cognitive_boost']
+        
+        if verb_token.tag_ in self.config['pos_tags']['present_tense']:
+            evidence_score += w['present_tense_boost']
+        elif verb_token.tag_ in self.config['pos_tags']['past_tense']:
+            evidence_score -= w['past_tense_reduction']
+        elif verb_token.tag_ in self.config['pos_tags']['present_participle']:
+            evidence_score += w['present_participle_boost']
+        
         if hasattr(verb_token, 'morph') and verb_token.morph:
             morph_str = str(verb_token.morph)
+            m = self.config['morph_features']
             
-            # Tense features
-            if 'Tense=Pres' in morph_str:
-                evidence_score += 0.1  # Present tense more anthropomorphic
-            elif 'Tense=Past' in morph_str:
-                evidence_score -= 0.05  # Past tense less anthropomorphic
+            if m['tense_present'] in morph_str:
+                evidence_score += w['tense_pres_boost']
+            elif m['tense_past'] in morph_str:
+                evidence_score -= w['tense_past_reduction']
             
-            # Person features
-            if 'Person=3' in morph_str:
-                evidence_score += 0.05  # Third person ("it thinks") more anthropomorphic
+            if m['person_3'] in morph_str:
+                evidence_score += w['person_3_boost']
             
-            # Number features
-            if 'Number=Sing' in morph_str:
-                evidence_score += 0.03  # Singular subjects often more anthropomorphic
+            if m['number_sing'] in morph_str:
+                evidence_score += w['number_sing_boost']
             
-            # Voice features
-            if 'Voice=Pass' in morph_str:
-                evidence_score -= 0.15  # Passive voice less anthropomorphic
+            if m['voice_pass'] in morph_str:
+                evidence_score -= w['voice_pass_reduction']
         
-        # === DEPENDENCY PARSING ENHANCED ANALYSIS ===
-        # More detailed dependency relationship analysis
-        if verb_token.dep_ == 'ROOT':
-            evidence_score += 0.05  # Main verb in sentence more prominent
-        elif verb_token.dep_ in ['xcomp', 'ccomp']:
-            evidence_score -= 0.1  # Complement clauses less anthropomorphic
-        elif verb_token.dep_ in ['acl', 'relcl']:
-            evidence_score -= 0.05  # Relative clauses less anthropomorphic
+        dep_rel = self.config['dependency_relations']
+        if verb_token.dep_ == dep_rel['root']:
+            evidence_score += w['root_verb_boost']
+        elif verb_token.dep_ in dep_rel['complement']:
+            evidence_score -= w['complement_reduction']
+        elif verb_token.dep_ in dep_rel['relative_clause']:
+            evidence_score -= w['relative_clause_reduction']
         
-        # === ENHANCED SUBJECT ANALYSIS ===
-        # More comprehensive subject type analysis
         if hasattr(subject_token, 'morph') and subject_token.morph:
             subj_morph = str(subject_token.morph)
-            if 'Number=Plur' in subj_morph:
-                evidence_score -= 0.1  # Plural subjects less anthropomorphic
+            if self.config['morph_features']['number_plur'] in subj_morph:
+                evidence_score -= w['plural_subject_reduction']
         
-        # Check subject's part-of-speech tag for more detail
-        if subject_token.tag_ in ['NNP', 'NNPS']:  # Proper nouns
-            if subject_token.ent_type_ in ['ORG', 'PRODUCT']:
-                evidence_score -= 0.1  # Organizations/products can have agency
-        elif subject_token.tag_ in ['NN', 'NNS']:  # Common nouns
-            evidence_score += 0.05  # Common nouns more likely to be inappropriate
+        if subject_token.tag_ in self.config['pos_tags']['proper_nouns']:
+            if subject_token.ent_type_ in self.config['entity_types']['semi_animate']:
+                evidence_score -= w['proper_noun_product_reduction']
+        elif subject_token.tag_ in self.config['pos_tags']['common_nouns']:
+            evidence_score += w['common_noun_boost']
         
-        # === ENHANCED NAMED ENTITY ANALYSIS ===
-        # More nuanced entity type handling with IOB tags
         if subject_token.ent_type_:
-            # Check entity IOB tags for confidence
             if hasattr(subject_token, 'ent_iob_'):
-                if subject_token.ent_iob_ == 'B':  # Beginning of entity
-                    evidence_score -= 0.1  # High confidence entity
-                elif subject_token.ent_iob_ == 'I':  # Inside entity
-                    evidence_score -= 0.05  # Part of entity
+                if subject_token.ent_iob_ == self.config['entity_iob']['beginning']:
+                    evidence_score -= w['entity_iob_b_reduction']
+                elif subject_token.ent_iob_ == self.config['entity_iob']['inside']:
+                    evidence_score -= w['entity_iob_i_reduction']
         
-        # === POS TAG ANALYSIS ===
-        # Part-of-speech based evidence adjustment
         if hasattr(subject_token, 'pos_'):
-            if subject_token.pos_ == 'PROPN':  # Proper noun
-                evidence_score -= 0.2  # Proper nouns can have more agency
-            elif subject_token.pos_ == 'NOUN':  # Common noun
-                evidence_score += 0.05  # Common nouns more likely inappropriate
-            elif subject_token.pos_ == 'PRON':  # Pronoun
-                evidence_score -= 0.3  # Pronouns refer to entities with agency
+            if subject_token.pos_ == self.config['pos_categories']['proper_noun']:
+                evidence_score -= w['propn_reduction']
+            elif subject_token.pos_ == self.config['pos_categories']['common_noun']:
+                evidence_score += w['noun_boost']
+            elif subject_token.pos_ == self.config['pos_categories']['pronoun']:
+                evidence_score -= w['pron_reduction']
         
         if hasattr(verb_token, 'pos_'):
-            if verb_token.pos_ == 'VERB':  # Main verb
-                evidence_score += 0.05  # Main verbs more prominent
-            elif verb_token.pos_ == 'AUX':  # Auxiliary verb
-                evidence_score -= 0.1  # Auxiliary verbs less anthropomorphic
+            if verb_token.pos_ == self.config['pos_categories']['verb']:
+                evidence_score += w['main_verb_boost']
+            elif verb_token.pos_ == self.config['pos_categories']['auxiliary']:
+                evidence_score -= w['aux_verb_reduction']
         
-        # === SUBJECT ANALYSIS ===
-        # Animate vs inanimate subject indicators
-        if subject_token.ent_type_ in ['PERSON', 'ORG']:
-            evidence_score -= 0.8  # Animate subjects can use human verbs
-        elif subject_token.ent_type_ in ['PRODUCT', 'FAC']:
-            evidence_score -= 0.2  # Products/facilities have some agency
+        if subject_token.ent_type_ in self.config['entity_types']['animate']:
+            evidence_score -= w['person_org_reduction']
+        elif subject_token.ent_type_ in self.config['entity_types']['semi_animate']:
+            evidence_score -= w['product_fac_reduction']
         
-        # === OBJECT/COMPLEMENT ANALYSIS ===
-        # Check what the verb acts upon
-        direct_objects = [child for child in verb_token.children if child.dep_ == 'dobj']
+        direct_objects = [child for child in verb_token.children if child.dep_ == dep_rel['direct_object']]
         if direct_objects:
             obj = direct_objects[0]
-            if obj.ent_type_ in ['PERSON']:
-                evidence_score += 0.2  # "System wants user" more anthropomorphic
-            elif obj.lemma_.lower() in ['data', 'information', 'input', 'output']:
-                evidence_score -= 0.2  # Technical objects less anthropomorphic
+            if obj.ent_type_ in self.config['entity_types']['animate']:
+                evidence_score += w['person_object_boost']
+            elif obj.lemma_.lower() in self.config['technical_objects']:
+                evidence_score -= w['technical_object_reduction']
         
-        # === MODIFIER ANALYSIS ===
-        # Adverbs can make anthropomorphism more/less problematic
-        adverbs = [child for child in verb_token.children if child.dep_ == 'advmod']
+        adverbs = [child for child in verb_token.children if child.dep_ == dep_rel['adverbial_modifier']]
         for adv in adverbs:
-            if adv.lemma_.lower() in ['automatically', 'dynamically', 'programmatically']:
-                evidence_score -= 0.3  # Technical adverbs reduce anthropomorphism
-            elif adv.lemma_.lower() in ['carefully', 'thoughtfully', 'intelligently']:
-                evidence_score += 0.2  # Human-like adverbs increase anthropomorphism
+            if adv.lemma_.lower() in self.config['technical_adverbs']:
+                evidence_score -= w['technical_adverb_reduction']
+            elif adv.lemma_.lower() in self.config['humanlike_adverbs']:
+                evidence_score += w['humanlike_adverb_boost']
         
-        # === AUXILIARY VERB PATTERNS ===
-        # Modal auxiliaries can change perception
-        auxiliaries = [child for child in verb_token.children if child.dep_ == 'aux']
+        auxiliaries = [child for child in verb_token.children if child.dep_ == dep_rel['auxiliary']]
         for aux in auxiliaries:
-            if aux.lemma_.lower() in ['can', 'will', 'should', 'must']:
-                evidence_score -= 0.1  # Modal usage feels more technical
-            elif aux.lemma_.lower() in ['might', 'could', 'would']:
-                evidence_score += 0.1  # Conditional usage feels more human-like
+            if aux.lemma_.lower() in self.config['modal_auxiliaries']['technical']:
+                evidence_score -= w['modal_aux_reduction']
+            elif aux.lemma_.lower() in self.config['modal_auxiliaries']['humanlike']:
+                evidence_score += w['conditional_aux_boost']
         
         return evidence_score
 
     def _apply_structural_clues_anthropomorphism(self, evidence_score: float, verb_token, subject_token, context: dict) -> float:
-        """Apply document structure-based clues for anthropomorphism."""
-        
+        """Apply document structure clues for anthropomorphism."""
         if not context:
             return evidence_score
         
+        w = self.config['structural_weights']
         block_type = context.get('block_type', 'paragraph')
         
-        # === TECHNICAL WRITING CONTEXTS ===
-        # Code and technical blocks are more permissive
         if block_type in ['code_block', 'literal_block']:
-            evidence_score -= 0.9  # Code comments can be very anthropomorphic
+            evidence_score -= w['code_block_reduction']
         elif block_type == 'inline_code':
-            evidence_score -= 0.7  # Inline technical context
-        
-        # === API DOCUMENTATION CONTEXTS ===
-        # API docs often use anthropomorphic language conventionally
+            evidence_score -= w['inline_code_reduction']
         elif block_type in ['table_cell', 'table_header']:
-            evidence_score -= 0.4  # API tables: "Method expects JSON"
-        
-        # === PROCEDURAL CONTEXTS ===
-        # Instructions and procedures often anthropomorphize systems
+            evidence_score -= w['table_reduction']
         elif block_type in ['ordered_list_item', 'unordered_list_item']:
-            evidence_score -= 0.3  # "The system will ask for confirmation"
-            
-            # Nested technical procedures even more permissive
+            evidence_score -= w['list_reduction']
             if context.get('list_depth', 1) > 1:
-                evidence_score -= 0.2
-        
-        # === HEADING CONTEXTS ===
-        # Headings often use shorthand anthropomorphic phrases
+                evidence_score -= w['nested_list_reduction']
         elif block_type == 'heading':
             heading_level = context.get('block_level', 1)
-            if heading_level <= 2:  # Main headings
-                evidence_score -= 0.3  # "What the System Knows"
-            else:  # Subsection headings
-                evidence_score -= 0.2
-        
-        # === ADMONITION CONTEXTS ===
-        # Notes and warnings often personify systems
+            if heading_level <= 2:
+                evidence_score -= w['h1_h2_reduction']
+            else:
+                evidence_score -= w['h3_plus_reduction']
         elif block_type == 'admonition':
             admonition_type = context.get('admonition_type', '').upper()
-            if admonition_type in ['NOTE', 'TIP', 'HINT']:
-                evidence_score -= 0.3  # "Note: The system expects..."
-            elif admonition_type in ['WARNING', 'CAUTION']:
-                evidence_score -= 0.2  # "Warning: The system will reject..."
+            if admonition_type in self.config['admonition_types']['informational']:
+                evidence_score -= w['note_tip_reduction']
+            elif admonition_type in self.config['admonition_types']['warning']:
+                evidence_score -= w['warning_caution_reduction']
         
         return evidence_score
 
     def _apply_semantic_clues_anthropomorphism(self, evidence_score: float, verb_token, subject_token, text: str, context: dict) -> float:
         """Apply semantic and content-type clues for anthropomorphism."""
-        
         if not context:
             return evidence_score
         
+        w = self.config['semantic_weights']
         content_type = context.get('content_type', 'general')
         
-        # === CONTENT TYPE ANALYSIS ===
-        # Use helper methods for enhanced content type analysis
         if self._is_api_documentation(text):
-            evidence_score -= 0.4  # API docs heavily anthropomorphic by convention
+            evidence_score -= w['api_docs_reduction']
         elif self._is_technical_specification(text, context):
-            evidence_score -= 0.3  # Technical specs allow anthropomorphic language
+            evidence_score -= w['tech_spec_reduction']
         elif self._is_user_interface_documentation(text):
-            evidence_score -= 0.3  # UI docs often anthropomorphize interfaces
+            evidence_score -= w['ui_docs_reduction']
         elif self._is_system_administration_content(text, context):
-            evidence_score -= 0.3  # Sysadmin content often anthropomorphizes systems
+            evidence_score -= w['sysadmin_reduction']
         elif self._is_software_architecture_content(text, context):
-            evidence_score -= 0.2  # Architecture docs moderately anthropomorphic
+            evidence_score -= w['architecture_reduction']
         elif self._is_troubleshooting_content(text, context):
-            evidence_score -= 0.2  # Troubleshooting often personalizes systems
-        
-        # General technical content analysis
+            evidence_score -= w['troubleshooting_reduction']
         elif content_type == 'technical':
-            evidence_score -= 0.3  # Technical writing conventionally anthropomorphic
-            
-            # Check for technical context words nearby
+            evidence_score -= w['technical_content_reduction']
             if self._has_technical_context_words(verb_token.sent.text, distance=10):
-                evidence_score -= 0.3  # "The API expects JSON response"
-        
-        # API documentation specifically very permissive
+                evidence_score -= w['technical_context_reduction']
         elif content_type == 'api':
-            evidence_score -= 0.4  # API docs heavily anthropomorphic by convention
-        
-        # Procedural content often anthropomorphizes systems
+            evidence_score -= w['api_content_reduction']
         elif content_type == 'procedural':
-            evidence_score -= 0.2  # Step-by-step instructions
-        
-        # Academic content more careful about anthropomorphism
+            evidence_score -= w['procedural_reduction']
         elif content_type == 'academic':
-            evidence_score += 0.2  # Academic writing more precise
-        
-        # Legal content very careful about anthropomorphism
+            evidence_score += w['academic_boost']
         elif content_type == 'legal':
-            evidence_score += 0.3  # Legal writing avoids imprecision
-        
-        # Marketing content often intentionally anthropomorphic
+            evidence_score += w['legal_boost']
         elif content_type == 'marketing':
-            evidence_score -= 0.4  # Marketing often personifies products
-        
-        # Narrative content allows anthropomorphism
+            evidence_score -= w['marketing_reduction']
         elif content_type == 'narrative':
-            evidence_score -= 0.5  # Storytelling context
+            evidence_score -= w['narrative_reduction']
         
-        # === DOMAIN-SPECIFIC PATTERNS ===
         domain = context.get('domain', 'general')
         if domain in ['software', 'engineering', 'devops', 'api']:
-            evidence_score -= 0.3  # Technical domains very permissive
+            evidence_score -= w['technical_domain_reduction']
         elif domain in ['documentation', 'tutorial']:
-            evidence_score -= 0.2  # Educational content often anthropomorphic
+            evidence_score -= w['documentation_domain_reduction']
         
-        # === AUDIENCE CONSIDERATIONS ===
         audience = context.get('audience', 'general')
         if audience in ['developer', 'technical', 'expert']:
-            evidence_score -= 0.2  # Technical audience expects anthropomorphic conventions
+            evidence_score -= w['technical_audience_reduction']
         elif audience in ['academic', 'scientific']:
-            evidence_score += 0.2  # Academic audience expects precision
+            evidence_score += w['academic_audience_boost']
         
-        # === VERB-SUBJECT COMBINATION PATTERNS ===
         verb_lemma = verb_token.lemma_.lower()
         subject_lemma = subject_token.lemma_.lower()
         
-        # Check for highly conventional technical patterns
-        conventional_patterns = {
-            ('api', 'expect'), ('api', 'return'), ('api', 'accept'), ('api', 'require'),
-            ('system', 'allow'), ('system', 'permit'), ('system', 'support'),
-            ('application', 'detect'), ('application', 'determine'), ('application', 'select'),
-            ('server', 'respond'), ('server', 'serve'), ('server', 'listen'),
-            ('database', 'store'), ('database', 'retrieve'), ('database', 'contain'),
-            ('interface', 'display'), ('interface', 'show'), ('interface', 'present'),
-            ('function', 'return'), ('function', 'accept'), ('function', 'expect'),
-            ('method', 'take'), ('method', 'perform'), ('method', 'execute')
-        }
+        if [subject_lemma, verb_lemma] in self.config['conventional_patterns']:
+            evidence_score -= w['conventional_pattern_reduction']
         
-        if (subject_lemma, verb_lemma) in conventional_patterns:
-            evidence_score -= 0.4  # Highly conventional technical usage
-        
-        # Check for problematic combinations
-        problematic_patterns = {
-            ('system', 'think'), ('system', 'believe'), ('system', 'feel'),
-            ('application', 'want'), ('application', 'wish'), ('application', 'hope'),
-            ('software', 'love'), ('software', 'hate'), ('software', 'worry')
-        }
-        
-        if (subject_lemma, verb_lemma) in problematic_patterns:
-            evidence_score += 0.4  # Clearly inappropriate combinations
+        if [subject_lemma, verb_lemma] in self.config['problematic_patterns']:
+            evidence_score += w['problematic_pattern_boost']
         
         return evidence_score
 
     def _apply_feedback_clues_anthropomorphism(self, evidence_score: float, verb_token, subject_token, context: dict) -> float:
-        """Apply clues learned from user feedback patterns for anthropomorphism."""
-        
-        # Load cached feedback patterns
+        """Apply feedback patterns for anthropomorphism."""
+        w = self.config['feedback_weights']
         feedback_patterns = self._get_cached_feedback_patterns('anthropomorphism')
         
         verb_lemma = verb_token.lemma_.lower()
         subject_lemma = subject_token.lemma_.lower()
-        
-        # Check for consistently accepted anthropomorphic patterns
-        accepted_patterns = feedback_patterns.get('accepted_anthropomorphic_patterns', set())
         pattern = f"{subject_lemma} {verb_lemma}"
         
+        accepted_patterns = feedback_patterns.get('accepted_anthropomorphic_patterns', set())
         if pattern in accepted_patterns:
-            evidence_score -= 0.5  # Users consistently accept this pattern
+            evidence_score -= w['accepted_pattern_reduction']
         
-        # Check for consistently flagged patterns
         flagged_patterns = feedback_patterns.get('flagged_anthropomorphic_patterns', set())
         if pattern in flagged_patterns:
-            evidence_score += 0.4  # Users consistently find this problematic
+            evidence_score += w['flagged_pattern_boost']
         
-        # Check verb-specific feedback
         verb_acceptance = feedback_patterns.get('verb_acceptance_rates', {})
         acceptance_rate = verb_acceptance.get(verb_lemma, 0.5)
         
-        if acceptance_rate > 0.8:
-            evidence_score -= 0.3  # Highly accepted verb
-        elif acceptance_rate < 0.2:
-            evidence_score += 0.3  # Frequently rejected verb
+        if acceptance_rate > w['acceptance_thresholds']['high']:
+            evidence_score -= w['high_verb_acceptance_reduction']
+        elif acceptance_rate < w['acceptance_thresholds']['low']:
+            evidence_score += w['low_verb_acceptance_boost']
         
-        # Check subject-specific feedback
         subject_acceptance = feedback_patterns.get('subject_acceptance_rates', {})
         subject_rate = subject_acceptance.get(subject_lemma, 0.5)
         
-        if subject_rate > 0.8:
-            evidence_score -= 0.2  # Subjects commonly anthropomorphized acceptably
-        elif subject_rate < 0.2:
-            evidence_score += 0.2  # Subjects that shouldn't be anthropomorphized
+        if subject_rate > w['acceptance_thresholds']['high']:
+            evidence_score -= w['high_subject_acceptance_reduction']
+        elif subject_rate < w['acceptance_thresholds']['low']:
+            evidence_score += w['low_subject_acceptance_boost']
         
         return evidence_score
 
@@ -531,126 +388,79 @@ class AnthropomorphismRule(BaseLanguageRule):
         domain = context.get('domain', '')
         content_type = context.get('content_type', '')
         
-        # Direct indicators
         if content_type in ['specification', 'technical'] or domain in ['engineering', 'technical']:
             return True
         
-        # Text-based indicators
-        spec_indicators = [
-            'specification', 'requirement', 'protocol', 'standard',
-            'implementation', 'architecture', 'design', 'interface',
-            'component', 'module', 'system', 'framework', 'library',
-            'algorithm', 'data structure', 'performance', 'scalability'
-        ]
-        
+        config = self.config['content_indicators']['technical_specification']
         text_lower = text.lower()
-        return sum(1 for indicator in spec_indicators if indicator in text_lower) >= 3
-
-    # Removed _is_user_interface_documentation - using base class utility
+        count = sum(1 for indicator in config['indicators'] if indicator in text_lower)
+        return count >= config['min_count']
 
     def _is_system_administration_content(self, text: str, context: dict) -> bool:
         """Check if content is system administration related."""
         domain = context.get('domain', '')
         content_type = context.get('content_type', '')
         
-        # Direct indicators
         if domain in ['sysadmin', 'devops', 'administration'] or content_type in ['administration', 'devops']:
             return True
         
-        # Text-based indicators
-        sysadmin_indicators = [
-            'server', 'administrator', 'configuration', 'deployment',
-            'monitoring', 'logging', 'backup', 'security', 'firewall',
-            'network', 'database', 'service', 'daemon', 'process',
-            'install', 'configure', 'manage', 'maintain', 'troubleshoot'
-        ]
-        
+        config = self.config['content_indicators']['system_administration']
         text_lower = text.lower()
-        return sum(1 for indicator in sysadmin_indicators if indicator in text_lower) >= 4
+        count = sum(1 for indicator in config['indicators'] if indicator in text_lower)
+        return count >= config['min_count']
 
     def _is_software_architecture_content(self, text: str, context: dict) -> bool:
         """Check if content is software architecture related."""
         domain = context.get('domain', '')
         content_type = context.get('content_type', '')
         
-        # Direct indicators
         if domain in ['architecture', 'software'] or content_type in ['architecture', 'design']:
             return True
         
-        # Text-based indicators
-        architecture_indicators = [
-            'architecture', 'design', 'pattern', 'framework', 'structure',
-            'component', 'module', 'layer', 'tier', 'microservice',
-            'service', 'interface', 'dependency', 'coupling', 'cohesion',
-            'scalability', 'performance', 'reliability', 'maintainability'
-        ]
-        
+        config = self.config['content_indicators']['software_architecture']
         text_lower = text.lower()
-        return sum(1 for indicator in architecture_indicators if indicator in text_lower) >= 4
+        count = sum(1 for indicator in config['indicators'] if indicator in text_lower)
+        return count >= config['min_count']
 
     def _is_troubleshooting_content(self, text: str, context: dict) -> bool:
         """Check if content is troubleshooting/debugging related."""
         content_type = context.get('content_type', '')
         domain = context.get('domain', '')
         
-        # Direct indicators
         if content_type in ['troubleshooting', 'debugging'] or domain in ['support', 'troubleshooting']:
             return True
         
-        # Text-based indicators
-        troubleshooting_indicators = [
-            'troubleshoot', 'debug', 'error', 'problem', 'issue', 'fix',
-            'solve', 'diagnose', 'identify', 'resolve', 'workaround',
-            'symptom', 'cause', 'solution', 'check', 'verify', 'test',
-            'validate', 'investigate', 'analyze', 'examine'
-        ]
-        
+        config = self.config['content_indicators']['troubleshooting']
         text_lower = text.lower()
-        return sum(1 for indicator in troubleshooting_indicators if indicator in text_lower) >= 4
+        count = sum(1 for indicator in config['indicators'] if indicator in text_lower)
+        return count >= config['min_count']
 
 
     def _get_contextual_message(self, verb_token, subject_token, evidence_score: float) -> str:
-        """Generate context-aware error messages based on evidence score."""
-        
+        """Generate context-aware error messages."""
         verb = verb_token.text
         subject = subject_token.text
+        thresholds = self.config['evidence_thresholds']
         
-        if evidence_score > 0.8:
+        if evidence_score > thresholds['high_inappropriate']:
             return f"Avoid anthropomorphism: '{subject}' {verb}' gives human characteristics to an inanimate object."
-        elif evidence_score > 0.5:
+        elif evidence_score > thresholds['moderate_inappropriate']:
             return f"Consider rephrasing: '{subject} {verb}' may be overly anthropomorphic for this context."
         else:
             return f"The phrase '{subject} {verb}' could be less anthropomorphic depending on your style guide."
 
     def _generate_smart_suggestions(self, verb_token, subject_token, evidence_score: float, context: dict) -> List[str]:
-        """Generate context-aware suggestions based on evidence score and context."""
-        
+        """Generate context-aware suggestions."""
         suggestions = []
         verb_lemma = verb_token.lemma_.lower()
         subject_text = subject_token.text
         
-        # === VERB-SPECIFIC SUGGESTIONS ===
-        verb_alternatives = {
-            'think': 'determine, calculate, process, analyze',
-            'know': 'store, contain, have, include',
-            'believe': 'assume, determine, indicate, suggest',
-            'want': 'require, need, expect, request',
-            'see': 'detect, identify, recognize, find',
-            'tell': 'inform, notify, indicate, show',
-            'ask': 'prompt, request, require, expect',
-            'decide': 'determine, select, choose, resolve',
-            'expect': 'require, anticipate, await, need',
-            'feel': 'detect, sense, measure, register'
-        }
-        
-        if verb_lemma in verb_alternatives:
-            alternatives = verb_alternatives[verb_lemma]
+        if verb_lemma in self.config['verb_alternatives']:
+            alternatives = self.config['verb_alternatives'][verb_lemma]
             suggestions.append(f"Replace '{verb_token.text}' with a more technical verb: {alternatives}.")
         
-        # === GENERAL SUGGESTIONS ===
         suggestions.append("Focus on what the system does rather than what it 'thinks' or 'feels'.")
         
-        # === CONTEXT-SPECIFIC SUGGESTIONS ===
         if context:
             content_type = context.get('content_type', 'general')
             
@@ -661,11 +471,11 @@ class AnthropomorphismRule(BaseLanguageRule):
             elif content_type == 'procedural':
                 suggestions.append("Focus on the actions users take and system responses.")
         
-        # === EVIDENCE-BASED SUGGESTIONS ===
+        thresholds = self.config['evidence_thresholds']
         if evidence_score > 0.7:
             suggestions.append("Consider completely rewriting the sentence to avoid anthropomorphism.")
             suggestions.append(f"Instead of '{subject_text} {verb_token.text}', describe the actual process or user action.")
-        elif evidence_score < 0.3:
+        elif evidence_score < thresholds['low_inappropriate']:
             suggestions.append("This usage may be acceptable in your context, but consider your style guide.")
         
         return suggestions

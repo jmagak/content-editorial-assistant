@@ -11,7 +11,25 @@ instance/
 logs/
 data/
 cache/
+.cache/
 temp/
 .env
 /2022-IT-Root-CA.pem
 CLAUDE.md
+
+# Pickle files (embedding caches, model artifacts)
+*.pkl
+
+# Secrets and environment
+.light/local/secrets.env
+
+# Testing Agent - Generated Files (test results, reports, history)
+testing_agent/reports/
+testing_agent/results/
+testing_agent/data/
+
+# Deployment scripts with credentials
+/deploy.sh
+/check_feedback.sh
+/FORMAT_COMPATIBILITY_IMPLEMENTATION_DOC.md
+/openshift-deployment-patch.yaml
